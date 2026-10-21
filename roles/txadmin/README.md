@@ -42,7 +42,10 @@ txAdmin owns them and changes their format between releases.
 - Set up the firewall layout of the `luminare.infra_edge` base role on the host: nftables with
   `/etc/nftables.conf` that defines `table inet filter` with input policy drop and includes
   `/etc/nftables.d/*.nft` last. Without `/etc/nftables.d` the role stops (see
-  `txadmin_firewall_required`), because txAdmin listens on every IPv4 address.
+  `txadmin_firewall_required`), because txAdmin listens on every IPv4 address. Do this before
+  the play: the fxserver role starts txAdmin before this role runs, so without the layout port
+  40120 is open until this role stops. The collection's playbook `luminare.gameserver.gameserver`
+  checks the layout before either role changes anything.
 
 ## Example playbook
 
@@ -75,6 +78,10 @@ txadmin_firewall_sources:
     - role: luminare.gameserver.fxserver
     - role: luminare.gameserver.txadmin
 ```
+
+This is what the collection's playbook `luminare.gameserver.gameserver` runs; `examples/inventory/`
+holds files like the ones above, with a host and the other settings (see
+[Run the playbook](../../docs/install.md#run-the-playbook)).
 
 Create the bcrypt hash for the default account on your workstation, for example with Python's
 `bcrypt` package (Debian and Ubuntu: `python3-bcrypt`). It asks for the password, so the password

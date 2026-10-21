@@ -1,0 +1,49 @@
+# Pre-check of the playbook luminare.gameserver.gameserver for fxserver_mode: txadmin. The fxserver
+# role starts txAdmin, which listens on port 40120 of every IPv4 address from its first start,
+# and only the txadmin role's drop-in /etc/nftables.d/40-txadmin.nft closes the port again. So the
+# firewall layout that the txadmin role requires (the same rules as in
+# roles/txadmin/tasks/assert.yml) is checked here, before either role changes anything.
+- name: Look for /etc/nftables.d, /etc/nftables.conf and nft
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    get_checksum: false
+  loop:
+    - /etc/nftables.d
+    - /etc/nftables.conf
+    - /usr/sbin/nft
+  register: gameserver_nft_stat
+
+- name: Read /etc/nftables.conf
+  ansible.builtin.slurp:
+    src: /etc/nftables.conf
+  register: gameserver_nft_conf
+  when: gameserver_nft_stat.results[1].stat.exists
+
+# With txadmin_firewall_manage the txadmin role creates /etc/nftables.d and installs nftables
+# itself, so only /etc/nftables.conf is required then. The patterns are the txadmin role's
+# (roles/txadmin/vars/main.yml); they stay in variables, because a Jinja string literal would
+# turn "\b" into a backspace character.
+- name: Require the firewall layout before txAdmin is started
+  vars:
+    gameserver_nft_manage: "{{ txadmin_firewall_manage | default(false) | bool }}"
+    gameserver_nft_text: "{{ gameserver_nft_conf.content | b64decode if gameserver_nft_conf is not skipped else '' }}"
+    gameserver_nft_table_re: '^[ \t]*table[ \t]+inet[ \t]+filter\b'
+    gameserver_nft_include_re: '^[ \t]*include[ \t]+"/etc/nftables[.]d/[*][.]nft"[ \t]*$'
+  ansible.builtin.assert:
+    that:
+      - gameserver_nft_manage or gameserver_nft_stat.results[0].stat.exists
+      - gameserver_nft_manage or gameserver_nft_stat.results[2].stat.exists
+      - gameserver_nft_text is search(gameserver_nft_table_re, multiline=true)
+      - gameserver_nft_text is search(gameserver_nft_include_re, multiline=true)
+    fail_msg: >-
+      fxserver_mode is txadmin: txAdmin listens on port 40120 of every IPv4 address as soon as the
+      fxserver role starts it, and only the txadmin role's drop-in /etc/nftables.d/40-txadmin.nft
+      closes the port again. That needs nft (installed:
+      {{ gameserver_nft_stat.results[2].stat.exists }}), the folder /etc/nftables.d (present:
+      {{ gameserver_nft_stat.results[0].stat.exists }}) and an /etc/nftables.conf (present:
+      {{ gameserver_nft_stat.results[1].stat.exists }}) that defines table inet filter and has the
+      line include "/etc/nftables.d/*.nft"; with txadmin_firewall_manage: true only the last.
+      Set up the firewall layout of the luminare.infra_edge base role first, or set
+      txadmin_firewall_required: false when another firewall already blocks the port. Nothing was
+      changed.
+    quiet: true

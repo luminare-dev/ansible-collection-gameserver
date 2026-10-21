@@ -1,8 +1,8 @@
 # Runbook
 
-The first entries cover the `fxserver` and `txadmin` roles on a managed host; the last two cover
-the automation in this repository (the weekly Molecule run and the release). Commands run as root
-on the host.
+The first entries cover the `fxserver` and `txadmin` roles on a managed host; the last three cover
+the automation in this repository (the weekly Molecule run, the end-to-end run and the release).
+Commands run as root on the host.
 
 ## Failure: a playbook run stops with "did not answer … rolled back to build …"
 
@@ -74,12 +74,22 @@ on the host.
 | **Mitigation** | Do not merge the pull request. For the weekly run, check whether the same job passed on `main` last week; if only the base image changed, a Dependabot pull request for `molecule/resources/Dockerfile.j2` is the likely trigger. |
 | **Fix** | Fix the role or the test in a pull request; idempotence failures need a `changed_when` or a module that reports its state correctly. |
 
+## Failure: the end-to-end run is red
+
+| | |
+|---|---|
+| **Meaning** | The manual `e2e` workflow ([docs/e2e.md](e2e.md)) failed a step: the secrets check, the server creation, a playbook run, a second run that reported changes, a host check, or the check that port 40120 times out from outside. |
+| **Impact** | The release is not confirmed on a real host with the real build. A failed `40120` check means the admin port was reachable from outside: treat it as a security bug. Nothing outside the run's own cloud project is touched. |
+| **Diagnosis** | The failed step names the check. The job summary has the timings up to that step. The clean-up step's log lists how many servers, firewalls and SSH keys with the label `e2e=ansible-collection-gameserver` are left. |
+| **Mitigation** | If the clean-up step failed or reports leftovers, delete them at once: `hcloud server list --selector e2e=ansible-collection-gameserver` (and `firewall`, `ssh-key`), then `hcloud <kind> delete <id>`. If the license key appears anywhere in the log, regenerate it in the platform's key portal, replace the environment secret and delete the run's log. |
+| **Fix** | Reproduce the failure with the `playbook` scenario (`cd roles/txadmin && molecule test --scenario-name playbook`) where the fake build allows, fix it in a pull request, and start the run again. |
+
 ## Failure: the release `build` job stops after "Extra release archives"
 
 | | |
 |---|---|
-| **Meaning** | `ansible-galaxy collection build` did not write `dist/luminare-gameserver-X.Y.Z.tar.gz` for the release tag `vX.Y.Z`. |
+| **Meaning** | `ansible-galaxy collection build` did not write `dist/luminare-gameserver-X.Y.Z.tar.gz` for the release tag `vX.Y.Z`, or the installed tarball failed `scripts/check_collection_tarball.sh` (the install, or `--syntax-check` of the playbook or of a role). |
 | **Impact** | The release stays a draft without files; nothing is published. |
-| **Diagnosis** | Compare `version:` in `galaxy.yml` and `version.txt` at the tag: release-please updates both in the release pull request. A `galaxy.yml` without the `# x-release-please-version` marker keeps the old version. |
+| **Diagnosis** | Compare `version:` in `galaxy.yml` and `version.txt` at the tag: release-please updates both in the release pull request. A `galaxy.yml` without the `# x-release-please-version` marker keeps the old version. For a failed check, the step log names the file that is missing or the task that does not parse; run `bash scripts/check_collection_tarball.sh <tarball>` on a tarball built from the tag to reproduce it (often a new folder that `build_ignore` in `galaxy.yml` leaves out). |
 | **Mitigation** | Leave the draft release as it is. |
-| **Fix** | Restore the marker on the `version:` line in `galaxy.yml` in a `fix:` pull request, so that the next release builds. Delete the unpublished draft release and its tag by hand; that version is skipped. |
+| **Fix** | Restore the marker on the `version:` line in `galaxy.yml`, or fix `build_ignore` or the file, in a `fix:` pull request, so that the next release builds. Delete the unpublished draft release and its tag by hand; that version is skipped. |

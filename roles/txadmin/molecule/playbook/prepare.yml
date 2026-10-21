@@ -1,0 +1,52 @@
+# The fake build 35245 on the test host, then the firewall layout of the end-to-end run
+# (tests/e2e/prepare.yml: nftables with input policy drop, SSH open, drop-ins included last).
+- name: Build the fake server artifact on the controller
+  hosts: localhost
+  gather_facts: false
+  vars:
+    repo_root: "{{ lookup('ansible.builtin.env', 'MOLECULE_PROJECT_DIRECTORY') }}/../.."
+    fake_out: "{{ lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}/fake"
+  tasks:
+    - name: Build fake build 35245
+      ansible.builtin.command:
+        argv:
+          - "{{ ansible_playbook_python }}"
+          - -I
+          - "{{ repo_root }}/tests/fake-artifact/build.py"
+          - --build
+          - "35245"
+          - --out
+          - "{{ fake_out }}/35245/fx.tar.xz"
+        creates: "{{ fake_out }}/35245/fx.tar.xz"
+
+- name: Copy the fake build and install the check tools
+  hosts: all
+  gather_facts: false
+  vars:
+    fake_out: "{{ lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}/fake"
+  tasks:
+    - name: Install iproute2 (ss, used by tests/e2e/check.yml)
+      ansible.builtin.apt:
+        name: iproute2
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Create the folder for the fake artifact
+      ansible.builtin.file:
+        path: /opt/fake/35245
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Copy the fake artifact to the test host
+      ansible.builtin.copy:
+        src: "{{ fake_out }}/35245/fx.tar.xz"
+        dest: /opt/fake/35245/fx.tar.xz
+        owner: root
+        group: root
+        mode: "0644"
+
+- name: Prepare the firewall layout like the end-to-end run
+  ansible.builtin.import_playbook: ../../../../tests/e2e/prepare.yml

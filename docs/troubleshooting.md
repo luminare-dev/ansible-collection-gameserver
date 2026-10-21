@@ -39,6 +39,39 @@ docker ps -a --filter name=^gs- --format '{{.Names}}'
 docker rm -f <name>
 ```
 
+## The playbook says "Could not match supplied host pattern" and "no hosts matched"
+
+**Cause:** `luminare.gameserver.gameserver` runs on the group `gameservers`, and the inventory has
+no such group, or `gameserver_hosts` was set in `group_vars` or `host_vars`, where Ansible reads
+it too late for the play's `hosts`.
+
+**Fix:** put the hosts into a group `gameservers` (as in `examples/inventory/hosts.yml`), or pass
+the pattern as an extra variable:
+
+```bash
+ansible-playbook -i inventory luminare.gameserver.gameserver -e gameserver_hosts=<group or host>
+```
+
+## The playbook stops with "is placeholder", "is a placeholder" or "The default account is invalid"
+
+**Cause:** `group_vars/gameservers/secrets.yml` from the example still holds a `CHANGE_ME_` value,
+or the encrypted file was not loaded. The roles check every secret before their first change, so
+the host is unchanged; the message names the variable, never its value.
+
+**Fix:** replace every `CHANGE_ME_` value (license key, API token, the master account's bcrypt
+hash, `/perf/` password) and encrypt the file. With Ansible Vault, run the playbook with
+`--ask-vault-pass` or a vault password file; with SOPS, check that its vars plugin is enabled.
+
+## The playbook updated one host and stopped before the others
+
+**Cause:** this is on purpose: the play handles one host at a time (by default
+`gameserver_serial` is 1) and stops at the first host that fails (`max_fail_percentage: 0`), so a
+build that does not start reaches one host only. That host was rolled back if the update did not
+answer.
+
+**Fix:** find the cause on that host ([runbook](runbook.md)), fix it in the inventory, and run the
+playbook again; hosts that already run the requested build report no change.
+
 ## The fxserver role stops with "Build … is not on this host yet, so it is downloaded"
 
 **Cause:** `fxserver_build` names a build that is not in `/opt/fxserver/artifacts/` yet, and
@@ -121,6 +154,17 @@ or the txadmin role ran before it.
 **Fix:** leave `txadmin_interface` empty. Port 40120 stays private through
 `/etc/nftables.d/40-txadmin.nft` (loopback and `txadmin_firewall_sources` only); reach the panel
 through an SSH tunnel or a tunnel connector.
+
+## The playbook stops with "fxserver_mode is txadmin: txAdmin listens on port 40120 …"
+
+**Cause:** the playbook's first task found no firewall layout for the txadmin role's drop-in:
+`nft`, `/etc/nftables.d` or an `/etc/nftables.conf` with `table inet filter` and the line
+`include "/etc/nftables.d/*.nft"` is missing. The message lists which of them exist. Nothing was
+changed, and txAdmin was not started.
+
+**Fix:** as in the next entry: set up the firewall layout of the `luminare.infra_edge` base role
+(or such an `/etc/nftables.conf` with `txadmin_firewall_manage: true`), or set
+`txadmin_firewall_required: false` only when another firewall already blocks the port.
 
 ## The txadmin role stops because it cannot write `40-txadmin.nft`
 

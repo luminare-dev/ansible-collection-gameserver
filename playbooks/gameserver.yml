@@ -1,0 +1,39 @@
+# luminare.gameserver.gameserver: a game server and its admin panel on one host, for every host
+# of the group "gameservers":
+#
+#   ansible-playbook -i <inventory> luminare.gameserver.gameserver
+#
+# The fxserver role installs the server build, the service, the backups and the game port drop-in.
+# With fxserver_mode: txadmin (as in examples/inventory/) the txadmin role then configures txAdmin
+# and the drop-in for its port 40120; with the default mode "plain" it is skipped.
+#
+# Hosts are handled one at a time, and the play stops at the first host that fails: an update
+# that does not answer is rolled back on that host, and the hosts after it keep their build.
+# Two variables change this. Pass them as extra variables (-e), because Ansible reads "hosts" and
+# "serial" before any inventory variable: gameserver_hosts (host pattern, default "gameservers")
+# and gameserver_serial (hosts per batch, default 1).
+#
+# With fxserver_mode: txadmin the host needs the nftables layout of the luminare.infra_edge base
+# role (/etc/nftables.conf that includes /etc/nftables.d/*.nft); see docs/install.md. The play
+# checks it first (tasks/check_firewall_layout.yml), because txAdmin listens on port 40120 of
+# every IPv4 address from the moment the fxserver role starts it until the txadmin role's drop-in
+# is loaded.
+#
+# Run by its name, Ansible looks up the short role names below in this collection
+# (luminare.gameserver.fxserver and luminare.gameserver.txadmin). In a copy of this play in your
+# own project, write those full names instead.
+- name: Game server and admin panel
+  hosts: "{{ gameserver_hosts | default('gameservers') }}"
+  become: true
+  serial: "{{ gameserver_serial | default(1) }}"
+  max_fail_percentage: 0
+  pre_tasks:
+    - name: Check the firewall layout for txAdmin before the first change
+      ansible.builtin.include_tasks: tasks/check_firewall_layout.yml
+      when:
+        - fxserver_mode | default('plain') == 'txadmin'
+        - txadmin_firewall_required | default(true) | bool
+  roles:
+    - role: fxserver
+    - role: txadmin
+      when: fxserver_mode | default('plain') == 'txadmin'

@@ -1,0 +1,26 @@
+# The collection playbook with the example inventory. Only what a test host cannot have is
+# replaced; every other setting comes from examples/inventory/group_vars/gameservers/ unchanged:
+# - the txadmin placeholders of secrets.yml: include_vars loads vars/test-values.yml (it outranks
+#   group_vars and stays set for the following plays of this run);
+# - the license key placeholder and the real download: the vars of import_playbook (play vars,
+#   which also outrank group_vars) set a dummy key and the fake build 35245 from prepare.yml.
+- name: Load the test values and read the fake build
+  hosts: gameservers
+  gather_facts: false
+  tasks:
+    - name: Load the test values instead of the example's txadmin placeholders
+      ansible.builtin.include_vars:
+        file: vars/test-values.yml
+
+    - name: Read the sha256 of the fake artifact (built in prepare.yml)
+      ansible.builtin.stat:
+        path: /opt/fake/35245/fx.tar.xz
+        checksum_algorithm: sha256
+      register: txadmin_playbook_fake_artifact
+
+- name: Run the collection playbook
+  ansible.builtin.import_playbook: ../../../../playbooks/gameserver.yml
+  vars:
+    fxserver_license_key: molecule-dummy-key
+    fxserver_artifact_url: file:///opt/fake/35245/fx.tar.xz
+    fxserver_artifact_sha256: "{{ txadmin_playbook_fake_artifact.stat.checksum }}"
