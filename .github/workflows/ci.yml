@@ -1,4 +1,5 @@
-# Caller: lint, tests and the full-history secret scan on every pull request and push to main.
+# Caller: lint, tests and the full-history secret scan on every pull request and push to main,
+# plus the Molecule scenario of every role on each platform on pull requests, by hand and weekly.
 # Required checks for the main ruleset: "ci / lint-test" and "secrets / gitleaks".
 name: ci
 
@@ -6,6 +7,8 @@ on:
   pull_request:
   push:
     branches: [main]
+  schedule:
+    - cron: "41 3 * * 2"   # Tuesdays 03:41 UTC: Molecule against fresh packages
   workflow_dispatch:
 
 permissions: {}
@@ -19,6 +22,9 @@ concurrency:
 jobs:
   ci:
     uses: ./.github/workflows/reusable-ci.yml
+    with:
+      # ansible-lint (production profile) and the unit tests; see scripts/test.sh.
+      test-command: bash scripts/test.sh
     permissions:
       contents: read
 
@@ -26,3 +32,97 @@ jobs:
     uses: ./.github/workflows/reusable-gitleaks.yml
     permissions:
       contents: read
+
+  plan:
+    name: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      matrix: ${{ steps.list.outputs.matrix }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: List the Molecule jobs (role x platform)
+        id: list
+        run: python3 scripts/molecule_scenarios.py --github-output
+
+  molecule-scenario:
+    # One job per role and platform, so that a failure names its platform and each platform has
+    # its own time limit. Entries: {role, platform, instance} from scripts/molecule_scenarios.py.
+    name: molecule-scenario (${{ matrix.role }}, ${{ matrix.platform }})
+    needs: plan
+    # Not on pushes to main: the pull request ran them on the same changes. "molecule" is not a
+    # required check, so a pull request can merge while it is red or still running; the weekly
+    # scheduled run tests main itself.
+    if: ${{ github.event_name != 'push' && needs.plan.outputs.matrix != '[]' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install the test tools (hash-pinned)
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet --require-hashes --only-binary=:all: -r requirements-test.txt
+          echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
+
+      - name: molecule test (one platform)
+        env:
+          ROLE: ${{ matrix.role }}
+          INSTANCE: ${{ matrix.instance }}
+        run: |
+          set -euo pipefail
+          cd "roles/${ROLE}"
+          molecule test --platform-name "${INSTANCE}"
+
+  molecule:
+    # One stable check name for the whole matrix (the scenario jobs are named per role and platform).
+    name: molecule
+    needs: [plan, molecule-scenario]
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Every Molecule scenario passed
+        env:
+          EVENT: ${{ github.event_name }}
+          PLAN: ${{ needs.plan.result }}
+          MATRIX: ${{ needs.plan.outputs.matrix }}
+          SCENARIOS: ${{ needs.molecule-scenario.result }}
+        run: |
+          set -euo pipefail
+          echo "event=${EVENT} plan=${PLAN} matrix=${MATRIX} scenarios=${SCENARIOS}"
+          if [ "${PLAN}" != "success" ]; then
+            echo "::error::the list of Molecule scenarios could not be built"
+            exit 1
+          fi
+          case "${SCENARIOS}" in
+            success) ;;
+            skipped)
+              # Skipped is fine only when there is nothing to run or on a push to main.
+              if [ "${MATRIX}" != "[]" ] && [ "${EVENT}" != "push" ]; then
+                echo "::error::the Molecule scenarios were skipped"
+                exit 1
+              fi
+              ;;
+            *)
+              echo "::error::at least one Molecule scenario did not pass (${SCENARIOS})"
+              exit 1
+              ;;
+          esac

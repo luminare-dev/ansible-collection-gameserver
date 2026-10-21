@@ -4,6 +4,9 @@ extends: default
 ignore: |
   node_modules/
   .venv/
+  .ansible/
+  .cache/
+  dist/
 
 rules:
   document-start: disable          # GitHub workflow and form files do not use "---"
@@ -11,5 +14,12 @@ rules:
     max: 120
   comments:
     min-spaces-from-content: 1
+  # The next three settings are the ones ansible-lint requires of a custom yamllint configuration.
+  comments-indentation: false
+  braces:
+    max-spaces-inside: 1
+  octal-values:
+    forbid-implicit-octal: true
+    forbid-explicit-octal: true
   truthy:
     check-keys: false              # "on:" in workflows

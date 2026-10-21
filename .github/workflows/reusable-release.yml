@@ -1,8 +1,8 @@
 # Reusable release: release-please keeps a release pull request open; merging it creates a draft
-# GitHub release and the vX.Y.Z tag. The same run then builds the source archive, writes
-# SHA256SUMS, attests the archive (SLSA build provenance), attaches both files and publishes the
-# release. Everything happens in one run because a tag or release created with GITHUB_TOKEN
-# does not trigger other workflows.
+# GitHub release and the vX.Y.Z tag. The same run then builds the source archive (plus any
+# archives of the extra-dist-command input), writes SHA256SUMS, attests the archives (SLSA build
+# provenance), attaches the files and publishes the release. Everything happens in one run
+# because a tag or release created with GITHUB_TOKEN does not trigger other workflows.
 #
 # The release is created as a draft (release-please-config.json: draft + force-tag-creation) and
 # published only after every file is attached, so it also works with immutable releases turned on.
@@ -19,6 +19,13 @@ on:
         description: Run before packaging; the release fails if the tests fail on the tag.
         type: string
         default: python3 -m unittest discover -s tests -v
+      extra-dist-command:
+        description: >-
+          Optional. Run after the source archive is built, with $TAG set; it may add more
+          *.tar.gz files to dist/ (for example an Ansible collection tarball). SHA256SUMS is then
+          rewritten over every dist/*.tar.gz, and every one of them is attested and attached.
+        type: string
+        default: ""
     outputs:
       release_created:
         value: ${{ jobs.release-please.outputs.release_created }}
@@ -75,6 +82,19 @@ jobs:
           set -euo pipefail
           python3 scripts/package_release.py --ref HEAD --version "${TAG#v}" --name "$ARCHIVE_NAME" --out dist
           (cd dist && sha256sum -c SHA256SUMS)
+
+      - name: Extra release archives
+        if: ${{ inputs.extra-dist-command != '' }}
+        env:
+          TAG: ${{ needs.release-please.outputs.tag_name }}
+          EXTRA_DIST_COMMAND: ${{ inputs.extra-dist-command }}
+        run: |
+          set -euo pipefail
+          bash -euo pipefail -c "$EXTRA_DIST_COMMAND"
+          cd dist
+          sha256sum -- *.tar.gz > SHA256SUMS
+          sha256sum -c SHA256SUMS
+          cat SHA256SUMS
 
       - name: Hand the files to the publish job
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

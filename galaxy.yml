@@ -1,0 +1,61 @@
+# Collection metadata for ansible-galaxy (collection build and git installs).
+# release-please updates the version line in each release pull request (generic updater, see
+# release-please-config.json); it stays equal to version.txt.
+namespace: luminare
+name: gameserver
+version: 0.0.0 # x-release-please-version
+readme: README.md
+authors:
+  - Luminare Development <oss@luminare.tech>
+description: >-
+  Ansible roles that install, configure, update and back up game servers, for FiveM/RedM servers
+  (FXServer)
+license:
+  - Apache-2.0
+tags:
+  - gameserver
+  - fxserver
+  - fivem
+  - redm
+  - txadmin
+  - systemd
+  - linux
+  - application
+# Only community collections that the roles really use go here, with a version range. The soft
+# dependency on luminare.infra_edge (its base role owns /etc/nftables.conf) is documented in the
+# README and is deliberately not listed.
+dependencies: {}
+repository: https://github.com/luminare-dev/ansible-collection-gameserver
+documentation: https://github.com/luminare-dev/ansible-collection-gameserver/tree/main/docs
+homepage: https://luminare.tech/open-source/ansible-collection-gameserver/
+issues: https://github.com/luminare-dev/ansible-collection-gameserver/issues
+# Development and release files that do not belong in the collection tarball. The brand files
+# are excluded on purpose: they are not licensed (see NOTICE).
+build_ignore:
+  - .ansible
+  - .ansible-lint
+  - .cache
+  - .config
+  - .forbidden-words-allow
+  - .gitattributes
+  - .github
+  - .gitignore
+  - .gitleaks.toml
+  - .markdownlint-cli2.jsonc
+  - .release-please-manifest.json
+  - .tox
+  - .venv
+  - .yamllint.yml
+  - "*.tar.gz"
+  - dist
+  - docs/brand
+  - molecule
+  - release-please-config.json
+  - requirements-*.in
+  - requirements-*.txt
+  - roles/*/molecule
+  - scripts
+  - tests/fixtures
+  - tests/test_*.py
+  - venv
+  - version.txt

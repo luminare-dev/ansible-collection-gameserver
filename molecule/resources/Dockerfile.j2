@@ -1,0 +1,37 @@
+# Test image for every Molecule scenario of this collection (roles/<role>/molecule/<scenario>/).
+# The molecule-plugins docker driver renders this file with Jinja2; "item" is the platform entry
+# of the scenario's molecule.yml, and item.image selects the base image:
+#   gs-debian13   -> Debian 13 "trixie" (primary platform)
+#   gs-ubuntu2404 -> Ubuntu 24.04 "noble"
+# Base images are pinned by digest (pulled and checked 2026-10-21). Dependabot's docker ecosystem
+# reads the FROM lines below and proposes digest updates (.github/dependabot.yml).
+{% if item.image == 'gs-debian13' %}
+FROM debian:trixie@sha256:4c25275446ca371766b8b093c696782eabce06263fccacb8d5d813b3dc44b308
+{% elif item.image == 'gs-ubuntu2404' %}
+FROM ubuntu:24.04@sha256:68ee22004a9109b44973313b02ff7b1de250f1de0f5ecb628d73f579aaff33ac
+{% else %}
+{{ molecule_platform_image_must_be_gs_debian13_or_gs_ubuntu2404 }}
+{% endif %}
+
+ENV container=docker \
+    DEBIAN_FRONTEND=noninteractive
+
+# systemd as PID 1 (the roles manage systemd units), Python for Ansible, python3-apt for the apt
+# module, sudo for become, CA certificates for HTTPS downloads. Nothing else: each role installs
+# what it needs, so a missing package shows up in Molecule and not first on a real host.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        python3 \
+        python3-apt \
+        sudo \
+        systemd \
+        systemd-sysv \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* \
+    && rm -f /lib/systemd/system/multi-user.target.wants/getty.target \
+    && systemctl mask getty.target console-getty.service systemd-firstboot.service \
+        systemd-udevd.service systemd-udev-trigger.service
+
+STOPSIGNAL SIGRTMIN+3
+CMD ["/lib/systemd/systemd"]
