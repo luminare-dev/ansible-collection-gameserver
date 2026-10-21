@@ -23,10 +23,11 @@ installed from git tags.
 Chosen option 2. `galaxy.yml` lists only community collections that the roles use. A role here
 that needs a port writes `/etc/nftables.d/<NN>-<role>.nft` with `add rule inet filter input …
 accept` lines only (the input policy is drop, so drop-ins only accept), writes it only when the
-directory exists or `<role>_firewall_manage` is `true`, and validates with
-`nft -c -f /etc/nftables.conf` before a reload. Numbers: 40 for the admin panel, 45 for the game
-port. Molecule scenarios create a minimal file of the same shape in `prepare.yml` instead of
-running the other collection.
+directory exists or `<role>_firewall_manage` is `true`, requires an `/etc/nftables.conf` that
+defines `table inet filter` and includes `/etc/nftables.d/*.nft` (otherwise the drop-in would
+validate but never be loaded), and validates with `nft -c -f /etc/nftables.conf` before a
+reload. Numbers: 40 for the admin panel, 45 for the game port. Molecule scenarios create a
+minimal file of the same shape in `prepare.yml` instead of running the other collection.
 
 ## Consequences
 

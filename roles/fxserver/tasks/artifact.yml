@@ -1,0 +1,96 @@
+- name: Read the active and the previous build links
+  ansible.builtin.stat:
+    path: "{{ fxserver_artifacts_dir }}/{{ item }}"
+    follow: false
+    get_checksum: false
+  loop:
+    - current
+    - previous
+  register: __fxserver_links
+
+- name: Remember the builds before this run
+  ansible.builtin.set_fact:
+    __fxserver_build: "{{ fxserver_build | string }}"
+    __fxserver_old_current: >-
+      {{ (__fxserver_links.results[0].stat.lnk_target | basename)
+         if __fxserver_links.results[0].stat.islnk | default(false) else '' }}
+    __fxserver_old_previous: >-
+      {{ (__fxserver_links.results[1].stat.lnk_target | basename)
+         if __fxserver_links.results[1].stat.islnk | default(false) else '' }}
+
+- name: Look for the requested build on disk
+  ansible.builtin.stat:
+    path: "{{ fxserver_artifacts_dir }}/{{ __fxserver_build }}/run.sh"
+    get_checksum: false
+  register: __fxserver_build_present
+
+- name: Download and unpack the requested build
+  when: not __fxserver_build_present.stat.exists
+  block:
+    - name: Check the download settings
+      ansible.builtin.assert:
+        that:
+          - fxserver_artifact_sha256 is match('^[0-9a-f]{64}$')
+          - fxserver_artifact_url is search('/' ~ __fxserver_build ~ '[-/]')
+        fail_msg: >-
+          Build {{ __fxserver_build }} is not on this host yet, so it is downloaded:
+          fxserver_artifact_url must be the download of that build (its path names the build
+          number) and fxserver_artifact_sha256 its sha256 (64 lower-case hex digits). Set all
+          three together; see docs/upgrade.md.
+        quiet: true
+
+    - name: Remove leftovers of an interrupted download
+      ansible.builtin.file:
+        path: "{{ fxserver_artifacts_dir }}/{{ item }}"
+        state: absent
+      loop:
+        - ".{{ __fxserver_build }}.tar.xz"
+        - ".{{ __fxserver_build }}.partial"
+        - "{{ __fxserver_build }}"
+
+    - name: Download the build (verified against fxserver_artifact_sha256)
+      ansible.builtin.get_url:
+        url: "{{ fxserver_artifact_url }}"
+        dest: "{{ fxserver_artifacts_dir }}/.{{ __fxserver_build }}.tar.xz"
+        checksum: "sha256:{{ fxserver_artifact_sha256 }}"
+        owner: root
+        group: root
+        mode: "0600"
+        timeout: 60
+
+    - name: Create the unpack directory
+      ansible.builtin.file:
+        path: "{{ fxserver_artifacts_dir }}/.{{ __fxserver_build }}.partial"
+        state: directory
+        owner: "{{ fxserver_user }}"
+        group: "{{ fxserver_user }}"
+        mode: "0750"
+
+    - name: Unpack the build
+      ansible.builtin.unarchive:
+        src: "{{ fxserver_artifacts_dir }}/.{{ __fxserver_build }}.tar.xz"
+        dest: "{{ fxserver_artifacts_dir }}/.{{ __fxserver_build }}.partial"
+        remote_src: true
+        owner: "{{ fxserver_user }}"
+        group: "{{ fxserver_user }}"
+
+    - name: Check that the archive has the launcher run.sh at the top
+      ansible.builtin.stat:
+        path: "{{ fxserver_artifacts_dir }}/.{{ __fxserver_build }}.partial/run.sh"
+        get_checksum: false
+      register: __fxserver_unpacked_run_sh
+      failed_when: not __fxserver_unpacked_run_sh.stat.exists
+
+    - name: Move the unpacked build into place
+      ansible.builtin.command:
+        argv:
+          - mv
+          - --no-target-directory
+          - "{{ fxserver_artifacts_dir }}/.{{ __fxserver_build }}.partial"
+          - "{{ fxserver_artifacts_dir }}/{{ __fxserver_build }}"
+      changed_when: true
+
+    - name: Remove the downloaded archive
+      ansible.builtin.file:
+        path: "{{ fxserver_artifacts_dir }}/.{{ __fxserver_build }}.tar.xz"
+        state: absent

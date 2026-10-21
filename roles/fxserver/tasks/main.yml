@@ -1,0 +1,67 @@
+# luminare.gameserver.fxserver: install a game server build, switch to it atomically, keep the
+# previous build for rollback, and back up server-data and txData before every switch.
+# Order: checks, packages and layout, the requested build, the host files (journald, firewall,
+# unit, backup script), then for a build switch the stop and the backup, so that the archive
+# holds server-data and secrets.cfg from before this run; then the files the next start reads,
+# the switch of the active build, the (re)start, a health check with automatic rollback, and
+# clean-up.
+
+- name: Check the settings and the platform
+  ansible.builtin.import_tasks: assert.yml
+
+- name: Install packages, the service user and the directories
+  ansible.builtin.import_tasks: install.yml
+
+- name: Make the requested build available on disk
+  ansible.builtin.import_tasks: artifact.yml
+
+- name: Limit how long journald keeps logs
+  ansible.builtin.import_tasks: journald.yml
+
+- name: Open the game port in the nftables drop-in
+  ansible.builtin.import_tasks: firewall.yml
+
+- name: Install the systemd unit
+  ansible.builtin.import_tasks: service.yml
+
+- name: Install the backup script and timer
+  ansible.builtin.import_tasks: backup.yml
+
+- name: Stop the server and back up before a build switch
+  ansible.builtin.import_tasks: pre_update.yml
+
+- name: Write server-data and secrets.cfg
+  block:
+    - name: Write server-data and secrets.cfg (the files the next start reads)
+      ansible.builtin.import_tasks: server_data.yml
+
+  rescue:
+    - name: Start the old build again (it was stopped for the backup)
+      ansible.builtin.systemd_service:
+        name: fxserver.service
+        state: started
+      when: __fxserver_stopped_for_backup | bool
+
+    - name: Report the failed step
+      vars:
+        __fxserver_msg_restarted: >-
+          This happened after the backup before the switch from build {{ __fxserver_old_current }}
+          to {{ __fxserver_build }}: the build was not switched, and the server was started again
+          on build {{ __fxserver_old_current }}.
+      ansible.builtin.fail:
+        msg: >-
+          {{ (ansible_failed_result.msg | default('A task failed.') ~ ' '
+              ~ (__fxserver_msg_restarted if __fxserver_stopped_for_backup | bool else '')) | trim }}
+
+- name: Switch the active build
+  ansible.builtin.import_tasks: switch.yml
+
+- name: Start the server and check that it answers
+  ansible.builtin.import_tasks: start.yml
+
+- name: Remove builds that are no longer kept
+  ansible.builtin.import_tasks: prune.yml
+
+- name: Write the textfile metrics
+  ansible.builtin.import_tasks: metrics.yml
+  when: fxserver_textfile_dir | length > 0

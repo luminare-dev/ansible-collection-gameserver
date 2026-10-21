@@ -1,0 +1,22 @@
+# The service always runs <artifacts>/current/run.sh. "current" is replaced in one rename(2), so
+# the unit never sees a missing or half-written link; "previous" names the build that was active
+# before, which is kept on disk for a rollback. pre_update.yml decided whether the build changes
+# and, if so, stopped the server and backed it up.
+
+- name: Point "previous" at the build that was active
+  ansible.builtin.file:
+    src: "{{ fxserver_artifacts_dir }}/{{ __fxserver_old_current }}"
+    dest: "{{ fxserver_artifacts_dir }}/previous"
+    state: link
+    force: true
+  when: __fxserver_update | bool
+
+- name: Switch "current" to the requested build
+  ansible.builtin.include_tasks: link_current.yml
+  vars:
+    __fxserver_link_build: "{{ __fxserver_build }}"
+  when: __fxserver_switch | bool
+
+- name: Remember which build is the rollback target now
+  ansible.builtin.set_fact:
+    __fxserver_active_previous: "{{ __fxserver_old_current if __fxserver_update | bool else __fxserver_old_previous }}"

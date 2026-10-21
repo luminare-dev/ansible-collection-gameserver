@@ -1,0 +1,54 @@
+# Before a build switch (update or rollback) the server is stopped and backed up, before this run
+# writes server-data or secrets.cfg, so that the archive holds the state from before the switch.
+# A failed backup stops the run here: the old build is started again (if it was running) and
+# nothing else changes.
+
+- name: Decide whether the active build changes
+  ansible.builtin.set_fact:
+    __fxserver_switch: "{{ __fxserver_old_current != __fxserver_build }}"
+    __fxserver_update: "{{ __fxserver_old_current not in ['', __fxserver_build] }}"
+    __fxserver_stopped_for_backup: false
+
+- name: Read the state of the service before the switch
+  ansible.builtin.systemd_service:
+    name: fxserver.service
+  register: __fxserver_service_before
+  when: __fxserver_update | bool
+
+- name: Back up before the switch, with the server stopped
+  when:
+    - __fxserver_update | bool
+    - fxserver_backup_before_update | bool
+  block:
+    - name: Stop the server so that the backup is consistent
+      ansible.builtin.systemd_service:
+        name: fxserver.service
+        state: stopped
+      when: __fxserver_service_before.status.ActiveState | default('inactive') in ['active', 'activating', 'reloading']
+      register: __fxserver_stop_for_backup
+
+    - name: Remember that the server was stopped for the backup
+      ansible.builtin.set_fact:
+        __fxserver_stopped_for_backup: "{{ __fxserver_stop_for_backup is not skipped }}"
+
+    - name: Back up server-data and txData before the switch
+      ansible.builtin.command:
+        argv:
+          - "{{ __fxserver_backup_script }}"
+          - "pre-update-{{ __fxserver_old_current }}-to-{{ __fxserver_build }}"
+      changed_when: true
+
+  rescue:
+    - name: Start the old build again
+      ansible.builtin.systemd_service:
+        name: fxserver.service
+        state: started
+      when: __fxserver_service_before.status.ActiveState | default('inactive') in ['active', 'activating', 'reloading']
+
+    - name: Report the failed backup
+      ansible.builtin.fail:
+        msg: >-
+          The backup before the switch from build {{ __fxserver_old_current }} to
+          {{ __fxserver_build }} failed, so the build was not switched; the server was started
+          again on build {{ __fxserver_old_current }} if it was running. The error of
+          {{ __fxserver_backup_script }} is in the failed task above (docs/runbook.md).

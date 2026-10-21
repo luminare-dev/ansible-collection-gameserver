@@ -1,0 +1,291 @@
+# The build life cycle after converge (35245 active): update, failed update, rollback, and runs
+# that the role must refuse at its checks.
+
+# The update also brings a new server-data commit, so that the check below can tell whether the
+# pre-update backup was taken before the role wrote this run's server-data.
+- name: Commit a new host name to the server-data repository
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Change sv_hostname in the test repository and publish the commit
+      ansible.builtin.shell:
+        cmd: |
+          set -eu
+          sed -i 's/^sv_hostname .*/sv_hostname "Molecule upgrade test 35246"/' server.cfg
+          git -c user.name=Molecule -c user.email=molecule@example.invalid \
+            commit --quiet -am "server-data for build 35246"
+          git push --quiet /opt/fake/server-data.git main
+        chdir: /opt/fake/server-data-src
+        executable: /bin/bash
+      changed_when: true
+
+- name: Update to fake build 35246
+  hosts: all
+  vars:
+    fxserver_build: 35246
+    fxserver_artifact_url: file:///opt/fake/35246/fx.tar.xz
+    fxserver_artifact_sha256: "{{ fxserver_test_fake_artifact.stat.checksum }}"
+  pre_tasks:
+    - name: Read the sha256 of fake build 35246
+      ansible.builtin.stat:
+        path: /opt/fake/35246/fx.tar.xz
+        checksum_algorithm: sha256
+      register: fxserver_test_fake_artifact
+  roles:
+    - role: fxserver
+
+- name: Check the update
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Check the links, the backup and the running build
+      ansible.builtin.include_tasks: tasks/check_build.yml
+      vars:
+        fxserver_test_current: "35246"
+        fxserver_test_previous: "35245"
+        fxserver_test_builds: ["35245", "35246"]
+        fxserver_test_backups: ["pre-update-35245-to-35246"]
+
+    - name: Find the pre-update archive
+      ansible.builtin.find:
+        paths: /var/backups/fxserver
+        patterns: "*-pre-update-35245-to-35246.tar.zst"
+      register: fxserver_test_pre_update
+
+    - name: Read server.cfg from the pre-update archive
+      ansible.builtin.command:
+        argv:
+          - tar
+          - --zstd
+          - --extract
+          - --to-stdout
+          - --file
+          - "{{ fxserver_test_pre_update.files[0].path }}"
+          - opt/fxserver/server-data/server.cfg
+      register: fxserver_test_archived_cfg
+      changed_when: false
+
+    - name: Read the host name the server runs with
+      ansible.builtin.uri:
+        url: http://127.0.0.1:30120/dynamic.json
+        return_content: true
+      register: fxserver_test_dynamic
+
+    - name: Check that the archive holds server-data from before the update, the server the new one
+      ansible.builtin.assert:
+        that:
+          - fxserver_test_archived_cfg.stdout is search('^sv_hostname "Molecule upgrade test"$', multiline=true)
+          - fxserver_test_dynamic.json.hostname == 'Molecule upgrade test 35246'
+
+- name: A failed pre-update backup stops the switch (rollback attempt to 35245)
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Run the role with a backup path that does not exist
+      block:
+        - name: Apply the role with fxserver_build 35245 and a broken backup list
+          ansible.builtin.include_role:
+            name: fxserver
+          vars:
+            fxserver_build: 35245
+            fxserver_backup_paths:
+              - /opt/fxserver/server-data
+              - /opt/fxserver/missing-for-this-test
+
+        - name: Fail, the switch must not happen without a backup
+          ansible.builtin.fail:
+            msg: The role switched the build although the backup failed.
+      rescue:
+        - name: Check that the role stopped and said why
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result.msg is search('backup before the switch from build 35246 to 35245 failed')
+
+    - name: Check that 35246 still runs and no archive was added
+      ansible.builtin.include_tasks: tasks/check_build.yml
+      vars:
+        fxserver_test_current: "35246"
+        fxserver_test_previous: "35245"
+        fxserver_test_builds: ["35245", "35246"]
+        fxserver_test_backups: ["pre-update-35245-to-35246"]
+
+# /etc/nftables.d alone (no /etc/nftables.conf, no nft) is an incomplete firewall layout: the role
+# must stop at its checks instead of failing later in the validation of the drop-in.
+- name: A drop-in directory without /etc/nftables.conf stops the run before any change
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Run the role with only /etc/nftables.d present
+      block:
+        - name: Create /etc/nftables.d without the rest of the firewall layout
+          ansible.builtin.file:
+            path: /etc/nftables.d
+            state: directory
+            owner: root
+            group: root
+            mode: "0755"
+
+        - name: Apply the role with fxserver_build 35245
+          ansible.builtin.include_role:
+            name: fxserver
+          vars:
+            fxserver_build: 35245
+
+        - name: Fail, the role must not go on without /etc/nftables.conf
+          ansible.builtin.fail:
+            msg: The role went on although /etc/nftables.conf is missing.
+      rescue:
+        - name: Check that the role stopped at its checks and said what is missing
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result.msg is search('/etc/nftables.d exists')
+              - ansible_failed_result.msg is search('/etc/nftables.conf does not exist')
+              - ansible_failed_result.msg is search('Nothing was changed')
+      always:
+        - name: Remove /etc/nftables.d again
+          ansible.builtin.file:
+            path: /etc/nftables.d
+            state: absent
+
+    - name: Check that 35246 still runs and nothing was switched or backed up
+      ansible.builtin.include_tasks: tasks/check_build.yml
+      vars:
+        fxserver_test_current: "35246"
+        fxserver_test_previous: "35245"
+        fxserver_test_builds: ["35245", "35246"]
+        fxserver_test_backups: ["pre-update-35245-to-35246"]
+
+# The nftables package's own /etc/nftables.conf has no include line: a drop-in would pass
+# "nft --check" but never be loaded, so the role must refuse it (here with
+# fxserver_firewall_manage, which also works without nft installed).
+- name: An /etc/nftables.conf without the drop-in include stops the run before any change
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Run the role with an /etc/nftables.conf that does not include /etc/nftables.d
+      block:
+        - name: Write /etc/nftables.conf without the include line
+          ansible.builtin.copy:
+            dest: /etc/nftables.conf
+            owner: root
+            group: root
+            mode: "0755"
+            content: |
+              #!/usr/sbin/nft -f
+              flush ruleset
+              table inet filter {
+                chain input {
+                  type filter hook input priority filter;
+                }
+              }
+
+        - name: Apply the role with fxserver_firewall_manage and fxserver_build 35245
+          ansible.builtin.include_role:
+            name: fxserver
+          vars:
+            fxserver_build: 35245
+            fxserver_firewall_manage: true
+
+        - name: Fail, the role must not go on without the include line
+          ansible.builtin.fail:
+            msg: The role went on although /etc/nftables.conf does not include /etc/nftables.d.
+      rescue:
+        - name: Check that the role stopped at its checks and named the missing include
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result.msg is search('fxserver_firewall_manage is true')
+              - ansible_failed_result.msg is search('include "/etc/nftables.d/[*][.]nft"')
+              - ansible_failed_result.msg is not search('nft is not installed')
+              - ansible_failed_result.msg is search('Nothing was changed')
+      always:
+        - name: Remove /etc/nftables.conf again
+          ansible.builtin.file:
+            path: /etc/nftables.conf
+            state: absent
+
+# Values of fxserver_cfg go into quoted server.cfg lines, so a quote or a line break could add
+# commands to server.cfg; resource names are limited to the characters of a folder name.
+- name: Quotes and line breaks in fxserver_cfg stop the run before any change
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Run the role with each value it must refuse
+      ansible.builtin.include_tasks: tasks/refused_cfg.yml
+      loop:
+        - {hostname: 'Test" +quit "'}
+        - {project_desc: "Line one\nquit"}
+        - {resources: ["fake; quit"]}
+      loop_control:
+        loop_var: fxserver_test_cfg
+
+    - name: Check that 35246 still runs and nothing was switched or backed up
+      ansible.builtin.include_tasks: tasks/check_build.yml
+      vars:
+        fxserver_test_current: "35246"
+        fxserver_test_previous: "35245"
+        fxserver_test_builds: ["35245", "35246"]
+        fxserver_test_backups: ["pre-update-35245-to-35246"]
+
+- name: Try the broken fake build 35247 (it never starts)
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Read the sha256 of fake build 35247
+      ansible.builtin.stat:
+        path: /opt/fake/35247/fx.tar.xz
+        checksum_algorithm: sha256
+      register: fxserver_test_fake_artifact
+
+    - name: Run the role with the broken build
+      block:
+        - name: Apply the role with fxserver_build 35247
+          ansible.builtin.include_role:
+            name: fxserver
+          vars:
+            fxserver_build: 35247
+            fxserver_artifact_url: file:///opt/fake/35247/fx.tar.xz
+            fxserver_artifact_sha256: "{{ fxserver_test_fake_artifact.stat.checksum }}"
+
+        - name: Fail, the broken build must not be accepted
+          ansible.builtin.fail:
+            msg: The role accepted a build that never answers the health check.
+      rescue:
+        - name: Check that the role rolled back and said so
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result.msg is search('Build 35247 did not answer')
+              - ansible_failed_result.msg is search('rolled back to build 35246')
+
+    - name: Check that 35246 runs again and nothing was pruned after the failure
+      ansible.builtin.include_tasks: tasks/check_build.yml
+      vars:
+        fxserver_test_current: "35246"
+        fxserver_test_previous: "35245"
+        fxserver_test_builds: ["35245", "35246", "35247"]
+        fxserver_test_backups: ["pre-update-35245-to-35246", "pre-update-35246-to-35247"]
+
+# A rollback needs only the build number: 35245 is still on disk, so the role must not try the
+# (deliberately unusable) download settings below.
+- name: Roll back to 35245 by setting the previous build
+  hosts: all
+  vars:
+    fxserver_build: 35245
+    fxserver_artifact_url: file:///nonexistent/35245/fx.tar.xz
+    fxserver_artifact_sha256: "0000000000000000000000000000000000000000000000000000000000000000"
+  roles:
+    - role: fxserver
+
+- name: Check the rollback
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Check the links, the backups and the running build
+      ansible.builtin.include_tasks: tasks/check_build.yml
+      vars:
+        fxserver_test_current: "35245"
+        fxserver_test_previous: "35246"
+        fxserver_test_builds: ["35245", "35246"]
+        fxserver_test_backups:
+          - pre-update-35245-to-35246
+          - pre-update-35246-to-35247
+          - pre-update-35246-to-35245

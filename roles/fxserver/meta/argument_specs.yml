@@ -1,0 +1,268 @@
+argument_specs:
+  main:
+    short_description: Install, update, roll back and back up a game server (FXServer)
+    description:
+      - Installs a server build from its download URL, checked against a sha256, into
+        <fxserver_artifacts_dir>/<build>/ and switches the "current" link to it in one rename.
+      - Keeps the previous build for a rollback (set fxserver_build back), checks the server with
+        a health check after every switch and rolls back automatically when it fails.
+      - Writes server-data (a git checkout or a minimal server.cfg) and secrets.cfg (mode 0600),
+        a hardened systemd unit, a journald retention drop-in, the nftables drop-in
+        45-fxserver.nft for the game port and textfile metrics.
+      - Archives server-data and txData before every switch, optionally on a timer, into
+        fxserver_backup_dir and keeps the newest fxserver_backup_keep archives.
+    author:
+      - Luminare Development
+    options:
+      fxserver_user:
+        type: str
+        default: fxserver
+        description: System user and group that run the server; owner of the server directories.
+      fxserver_base_dir:
+        type: path
+        default: /opt/fxserver
+        description: Base directory and home of the service user; the service may write below it.
+      fxserver_artifacts_dir:
+        type: path
+        default: /opt/fxserver/artifacts
+        description: Unpacked builds (<build>/) and the links "current" and "previous".
+      fxserver_server_data_dir:
+        type: path
+        default: /opt/fxserver/server-data
+        description: server-data (server.cfg, secrets.cfg, resources); working directory of the unit.
+      fxserver_txdata_dir:
+        type: path
+        default: /opt/fxserver/txData
+        description: txData directory; created empty and included in backups.
+      fxserver_build:
+        type: int
+        default: 35245
+        description:
+          - Build number to run. A build that is not on disk yet is downloaded from
+            fxserver_artifact_url; one that is (the previous build, for example) is switched to
+            without a download.
+      fxserver_artifact_url:
+        type: str
+        default: >-
+          https://runtime.fivem.net/artifacts/fivem/build_proot_linux/master/35245-6efb47dff473c0e2a12fb50b08d74c0eb24a50d5/fx.tar.xz
+        description:
+          - Download URL of fxserver_build (fx.tar.xz). Its path must name the build number.
+          - Only used when the build is not on disk yet.
+      fxserver_artifact_sha256:
+        type: str
+        default: 16fcffd53a30a3909cbb2cfd26f89f950a59452792cafd0eda2174bdfeef9b2f
+        description:
+          - sha256 of the download; required, the download fails when it differs.
+          - The platform publishes no checksums; record it from your own download (docs/upgrade.md).
+      fxserver_keep_builds:
+        type: int
+        default: 2
+        description:
+          - Build directories kept on disk, in this order, the active build, the previous build,
+            then the highest build numbers.
+      fxserver_server_data_repo:
+        type: str
+        default: ""
+        description:
+          - Git URL of your server-data repository. Empty means the role writes a minimal server.cfg
+            from fxserver_cfg instead.
+          - The repository's server.cfg must contain the line "exec secrets.cfg"; keep secrets.cfg
+            and cache/ out of it (.gitignore).
+      fxserver_server_data_version:
+        type: str
+        default: main
+        description: Branch, tag or commit of fxserver_server_data_repo.
+      fxserver_server_data_deploy_key:
+        type: str
+        default: ""
+        no_log: true
+        description: Private SSH key (read-only deploy key) for fxserver_server_data_repo; secret.
+      fxserver_cfg:
+        type: dict
+        default: {}
+        description:
+          - Settings for the templated server.cfg (only without fxserver_server_data_repo); keys
+            left out keep their defaults.
+        options:
+          endpoint:
+            type: str
+            default: 0.0.0.0
+            description: Address for endpoint_add_tcp/endpoint_add_udp (no quotes or line breaks).
+          hostname:
+            type: str
+            default: Game server
+            description: sv_hostname (at most 120 characters, no quotes or line breaks).
+          project_name:
+            type: str
+            default: Game server
+            description: sv_projectName (at most 40 characters, no quotes or line breaks).
+          project_desc:
+            type: str
+            default: A game server set up with Ansible.
+            description: sv_projectDesc (at most 250 characters, no quotes or line breaks).
+          locale:
+            type: str
+            default: en-US
+            description: locale convar (no quotes or line breaks).
+          max_clients:
+            type: int
+            default: 32
+            description: sv_maxclients; from 32 onesync must be on or legacy, above 64 on.
+          onesync:
+            type: str
+            default: "on"
+            choices: ["on", legacy, "off"]
+            description: onesync convar.
+          enforce_game_build:
+            type: str
+            default: ""
+            description: sv_enforceGameBuild (no quotes or line breaks); empty leaves it out.
+          master1_disabled:
+            type: bool
+            default: true
+            description:
+              - true writes sv_master1 "", which disables the connect button in the server browser.
+              - It does not de-list the server; a server with a valid license key appears in the
+                public server list unless it runs LAN-only (lan), so hostname, project_name and
+                project_desc are public.
+          lan:
+            type: bool
+            default: false
+            description:
+              - true writes "sv_lan true" (LAN-only); the server then does not appear in the public
+                server list. The role still requires fxserver_license_key.
+          appear_allowlisted:
+            type: bool
+            default: true
+            description: true writes "sets sv_appearAllowlisted true" (a lock icon in the server browser).
+          request_paranoia:
+            type: int
+            default: 1
+            choices: [0, 1, 2, 3]
+            description:
+              - sv_requestParanoia. 1 blocks requests to the JSON endpoints with a Via header
+                (proxies), 2 also requests with an Upgrade-Insecure-Requests header (browsers);
+                they get "Nope." and the address is blocked. The health check sends neither header.
+          resources:
+            type: list
+            elements: str
+            default: []
+            description: Resources started with "ensure", in this order (letters, digits, "_", "." and "-").
+          extra_lines:
+            type: list
+            elements: str
+            default: []
+            description: Further server.cfg lines, written before "exec secrets.cfg"; never secrets.
+      fxserver_license_key:
+        type: str
+        default: ""
+        no_log: true
+        description:
+          - Server license key, written to secrets.cfg as sv_licenseKey; secret, from an encrypted
+            variables file only.
+          - Required when fxserver_service_state is started; the placeholder CHANGE_ME_LICENSE_KEY
+            is refused.
+      fxserver_perf_user:
+        type: str
+        default: prometheus
+        description: User name for /perf/ (sv_prometheusBasicAuthUser).
+      fxserver_perf_password:
+        type: str
+        default: ""
+        no_log: true
+        description:
+          - Password for /perf/ (sv_prometheusBasicAuthPassword), at least 24 characters.
+          - Empty never leaves /perf/ open (the server answers it to anyone when both convars are
+            empty). The role then keeps the password that secrets.cfg already has, or writes a
+            random one of 32 letters and digits; set this variable to scrape /perf/.
+      fxserver_secrets_cfg_extra:
+        type: dict
+        default: {}
+        no_log: true
+        description: Further secret convars for secrets.cfg as name/value pairs, for example mysql_connection_string.
+      fxserver_game_port:
+        type: int
+        default: 30120
+        description: Game port (tcp and udp); also used by the templated server.cfg and the firewall drop-in.
+      fxserver_service_enabled:
+        type: bool
+        default: true
+        description: Start fxserver.service at boot.
+      fxserver_service_state:
+        type: str
+        default: started
+        choices: [started, stopped]
+        description: State of fxserver.service after the run; the health check runs only for started.
+      fxserver_healthcheck_url:
+        type: str
+        default: http://127.0.0.1:30120/info.json
+        description:
+          - URL that must answer with status 200 after every run (default follows fxserver_game_port).
+          - Change it when the server does not listen on 127.0.0.1 (fxserver_cfg endpoint).
+      fxserver_healthcheck_timeout:
+        type: int
+        default: 180
+        description: Seconds to wait for the health check (at least 5).
+      fxserver_rollback_on_failure:
+        type: bool
+        default: true
+        description:
+          - When the health check fails after a build switch, switch back to the previous build
+            and fail the run.
+      fxserver_journald_retention:
+        type: str
+        default: 14day
+        description: MaxRetentionSec for journald (host-wide drop-in 60-fxserver.conf); empty removes the drop-in.
+      fxserver_firewall_manage:
+        type: bool
+        default: false
+        description:
+          - false writes /etc/nftables.d/45-fxserver.nft only when /etc/nftables.d exists; true also
+            creates the directory and installs nftables.
+          - Either way /etc/nftables.conf must exist, define table inet filter and include
+            /etc/nftables.d/*.nft, or the run stops before any change.
+      fxserver_firewall_reload:
+        type: bool
+        default: true
+        description: Restart nftables.service after the drop-in changed.
+      fxserver_firewall_sources:
+        type: list
+        elements: str
+        default: ["0.0.0.0/0", "::/0"]
+        description: Addresses or networks that may reach the game port; an empty list writes no rule.
+      fxserver_textfile_dir:
+        type: str
+        default: ""
+        description:
+          - node_exporter textfile collector directory for fxserver_artifact.prom and
+            fxserver_backup.prom; empty writes none.
+      fxserver_backup_dir:
+        type: path
+        default: /var/backups/fxserver
+        description: Directory of the backup archives (root only, mode 0700).
+      fxserver_backup_keep:
+        type: int
+        default: 3
+        description: Newest archives kept in fxserver_backup_dir; older ones are removed after each backup.
+      fxserver_backup_before_update:
+        type: bool
+        default: true
+        description: Stop the server and back up before every build switch (update or rollback).
+      fxserver_backup_timer_enabled:
+        type: bool
+        default: false
+        description: Enable fxserver-backup.timer (a backup while the server runs).
+      fxserver_backup_timer_on_calendar:
+        type: str
+        default: "*-*-* 04:30:00"
+        description: OnCalendar of fxserver-backup.timer (local time of the host, plus up to 10 minutes random delay).
+      fxserver_backup_paths:
+        type: list
+        elements: path
+        default: ["/opt/fxserver/server-data", "/opt/fxserver/txData"]
+        description: Absolute paths in each archive; also the paths to give an off-host backup tool such as restic.
+      fxserver_backup_exclude:
+        type: list
+        elements: path
+        default: ["/opt/fxserver/server-data/cache"]
+        description: Absolute paths left out of each archive (the server rebuilds its cache).

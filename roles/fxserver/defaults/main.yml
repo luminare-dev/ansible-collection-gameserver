@@ -1,0 +1,69 @@
+# Defaults of luminare.gameserver.fxserver. Every variable is described in meta/argument_specs.yml
+# and in the role README; secrets belong in an encrypted variables file, never here.
+
+# Service user and directory layout
+fxserver_user: fxserver
+fxserver_base_dir: /opt/fxserver
+fxserver_artifacts_dir: "{{ fxserver_base_dir }}/artifacts"
+fxserver_server_data_dir: "{{ fxserver_base_dir }}/server-data"
+fxserver_txdata_dir: "{{ fxserver_base_dir }}/txData"
+
+# Server build. The defaults are the Recommended Linux build of 2026-10-21 and the sha256 of its
+# official download, recorded that day (the platform publishes no checksums). To update, set all
+# three together (docs/upgrade.md). A build that is already on disk is never downloaded again, so
+# a rollback only needs fxserver_build.
+fxserver_build: 35245
+fxserver_artifact_url: >-
+  https://runtime.fivem.net/artifacts/fivem/build_proot_linux/master/35245-6efb47dff473c0e2a12fb50b08d74c0eb24a50d5/fx.tar.xz
+fxserver_artifact_sha256: 16fcffd53a30a3909cbb2cfd26f89f950a59452792cafd0eda2174bdfeef9b2f
+# Build directories kept on disk: the active one, the previous one, then the newest others.
+fxserver_keep_builds: 2
+
+# server-data: a git repository (optional) or, when empty, a minimal templated server.cfg.
+fxserver_server_data_repo: ""
+fxserver_server_data_version: main
+fxserver_server_data_deploy_key: ""
+# Settings for the templated server.cfg; keys left out keep the values in vars/main.yml.
+fxserver_cfg: {}
+
+# Secrets, written to secrets.cfg (mode 0600). Example inventories use CHANGE_ME_LICENSE_KEY;
+# the role refuses to start the server with that placeholder or an empty key. Without
+# fxserver_perf_password the role writes a random /perf/ password into secrets.cfg and keeps it
+# there, so /perf/ is never open.
+fxserver_license_key: ""
+fxserver_perf_user: prometheus
+fxserver_perf_password: ""
+fxserver_secrets_cfg_extra: {}
+
+# Service
+fxserver_game_port: 30120
+fxserver_service_enabled: true
+fxserver_service_state: started
+fxserver_healthcheck_url: "http://127.0.0.1:{{ fxserver_game_port }}/info.json"
+fxserver_healthcheck_timeout: 180
+fxserver_rollback_on_failure: true
+
+# Logs: how long journald keeps entries (host-wide setting); "" leaves it to another role.
+fxserver_journald_retention: 14day
+
+# Firewall drop-in /etc/nftables.d/45-fxserver.nft (luminare.infra_edge base role layout).
+fxserver_firewall_manage: false
+fxserver_firewall_reload: true
+fxserver_firewall_sources:
+  - "0.0.0.0/0"
+  - "::/0"
+
+# Metrics for the node_exporter textfile collector; "" writes none.
+fxserver_textfile_dir: ""
+
+# Backups of server-data and txData (zstd-compressed tar archives).
+fxserver_backup_dir: /var/backups/fxserver
+fxserver_backup_keep: 3
+fxserver_backup_before_update: true
+fxserver_backup_timer_enabled: false
+fxserver_backup_timer_on_calendar: "*-*-* 04:30:00"
+fxserver_backup_paths:
+  - "{{ fxserver_server_data_dir }}"
+  - "{{ fxserver_txdata_dir }}"
+fxserver_backup_exclude:
+  - "{{ fxserver_server_data_dir }}/cache"

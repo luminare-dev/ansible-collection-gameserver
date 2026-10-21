@@ -1,0 +1,17 @@
+# {{ ansible_managed }}
+# luminare.gameserver.fxserver: one backup of server-data and txData (started by the timer).
+[Unit]
+Description=Back up the game server data (fxserver-backup)
+Documentation=https://github.com/luminare-dev/ansible-collection-gameserver/tree/main/roles/fxserver
+
+[Service]
+Type=oneshot
+ExecStart={{ __fxserver_backup_script }} scheduled
+Nice=10
+IOSchedulingClass=idle
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+ReadWritePaths={{ fxserver_backup_dir }}{% if fxserver_textfile_dir | length > 0 %} -{{ fxserver_textfile_dir }}{% endif %}
+

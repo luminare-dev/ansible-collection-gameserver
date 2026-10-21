@@ -13,6 +13,7 @@ of this repository and a tarball built from it.
 | Python (controller) | 3.12 or later | Required by ansible-core 2.21. |
 | git (controller) | any current version | Only for the install from a git tag. |
 | Managed hosts | Debian 13 "trixie" or Ubuntu 24.04 "noble", x86_64 | The platforms the Molecule scenarios run on. |
+| Network (managed hosts) | HTTPS to the server build download | The `fxserver` role downloads a build only when it is not on the host yet; with `fxserver_server_data_repo` it also needs access to that git repository. |
 
 ## Install
 

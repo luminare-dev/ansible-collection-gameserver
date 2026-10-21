@@ -1,0 +1,22 @@
+- name: Create the textfile collector directory
+  ansible.builtin.file:
+    path: "{{ fxserver_textfile_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Read when the active build was switched on (time of the "current" link)
+  ansible.builtin.stat:
+    path: "{{ fxserver_artifacts_dir }}/current"
+    follow: false
+    get_checksum: false
+  register: __fxserver_current_link
+
+- name: Write fxserver_artifact.prom (build number and switch time)
+  ansible.builtin.template:
+    src: fxserver_artifact.prom.j2
+    dest: "{{ fxserver_textfile_dir }}/fxserver_artifact.prom"
+    owner: root
+    group: root
+    mode: "0644"

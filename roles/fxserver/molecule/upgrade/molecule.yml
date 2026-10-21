@@ -1,0 +1,71 @@
+# Scenario "upgrade": server-data from a git repository, then the life cycle of the build.
+#   converge     install fake build 35245 (idempotence: a second run changes nothing)
+#   side_effect  update to fake build 35246 (pre-update backup, link switch, health check), a
+#                switch whose backup fails (refused, 35246 keeps running), a run that stops at the
+#                checks because /etc/nftables.d exists without /etc/nftables.conf, the broken fake
+#                build 35247 (automatic rollback to 35246), then a rollback to 35245 by setting
+#                fxserver_build only (no download)
+#   verify       final state: 35245 active, 35246 kept for rollback, 35247 removed, no deploy key
+# Without /etc/nftables.d this scenario also proves that no firewall file is written.
+# Ansible connects as the non-root user "admin" with sudo, as on a host without root login (the
+# luminare.infra_edge base role turns it off); prepare.yml creates that user as root. The git
+# checkout runs as the service user, which needs setfacl (package acl) in this setup.
+platforms:
+  - name: gs-fxserver-upgrade-debian13
+    image: gs-debian13
+    dockerfile: ../../../../molecule/resources/Dockerfile.j2
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    tmpfs:
+      - /run
+      - /run/lock
+    command: /lib/systemd/systemd
+  - name: gs-fxserver-upgrade-ubuntu2404
+    image: gs-ubuntu2404
+    dockerfile: ../../../../molecule/resources/Dockerfile.j2
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    tmpfs:
+      - /run
+      - /run/lock
+    command: /lib/systemd/systemd
+
+provisioner:
+  name: ansible
+  inventory:
+    group_vars:
+      all:
+        # Test values only: the fake server accepts any key.
+        fxserver_license_key: molecule-dummy-key
+        fxserver_server_data_repo: file:///opt/fake/server-data.git
+        fxserver_server_data_version: main
+        # Not a key: a local repository needs none, but the role still writes and removes it.
+        fxserver_server_data_deploy_key: molecule-dummy-deploy-key
+        fxserver_textfile_dir: /var/lib/node_exporter/textfile_collector
+        # The broken build fails the health check after this many seconds.
+        fxserver_healthcheck_timeout: 20
+        fxserver_journald_retention: ""
+    host_vars:
+      gs-fxserver-upgrade-debian13:
+        ansible_user: admin
+        ansible_become: true
+      gs-fxserver-upgrade-ubuntu2404:
+        ansible_user: admin
+        ansible_become: true
+
+scenario:
+  test_sequence:
+    - dependency
+    - destroy
+    - syntax
+    - create
+    - prepare
+    - converge
+    - idempotence
+    - side_effect
+    - verify
+    - destroy

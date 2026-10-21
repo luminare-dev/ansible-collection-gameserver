@@ -1,0 +1,53 @@
+# {{ ansible_managed }}
+# Minimal server.cfg written by luminare.gameserver.fxserver (fxserver_cfg). Secrets such as the
+# license key are in secrets.cfg (mode 0600), which the last line runs.
+{% set cfg = __fxserver_cfg %}
+endpoint_add_tcp "{{ cfg.endpoint }}:{{ fxserver_game_port }}"
+endpoint_add_udp "{{ cfg.endpoint }}:{{ fxserver_game_port }}"
+
+sv_hostname "{{ cfg.hostname }}"
+sets sv_projectName "{{ cfg.project_name }}"
+sets sv_projectDesc "{{ cfg.project_desc }}"
+sets locale "{{ cfg.locale }}"
+sv_maxclients {{ cfg.max_clients | int }}
+set onesync {{ cfg.onesync }}
+{% if cfg.enforce_game_build | string | length > 0 %}
+sv_enforceGameBuild {{ cfg.enforce_game_build }}
+{% endif %}
+{% if cfg.master1_disabled | bool %}
+# An empty sv_master1 disables the connect button in the server browser. It does not de-list the
+# server: a server with a valid license key appears in the public server list unless it runs
+# LAN-only (sv_lan true), so its name and description above are public.
+sv_master1 ""
+{% endif %}
+{% if cfg.lan | bool %}
+# LAN-only: the server does not appear in the public server list (the platform documentation
+# also says that license key checks are skipped in this mode).
+sv_lan true
+{% endif %}
+{% if cfg.appear_allowlisted | bool %}
+# Makes the server appear allowlisted (a lock icon in the server browser).
+sets sv_appearAllowlisted true
+{% endif %}
+sv_scriptHookAllowed 0
+# No sv_endpointPrivacy: builds from July 2026 on (35245 included) never show player addresses on
+# the HTTP endpoints and warn that the setting was removed when it is set to true.
+# 1 blocks requests to the JSON endpoints that carry a Via header (sent through a proxy); 2 also
+# blocks requests with an Upgrade-Insecure-Requests header (browsers). Blocked requests get
+# "Nope." and the sending address is blocked. The role's health check sends neither header.
+set sv_requestParanoia {{ cfg.request_paranoia | int }}
+# No rcon_password: the remote console stays off.
+{% if cfg.resources | length > 0 %}
+
+{% for resource in cfg.resources %}
+ensure {{ resource }}
+{% endfor %}
+{% endif %}
+{% if cfg.extra_lines | length > 0 %}
+
+{% for line in cfg.extra_lines %}
+{{ line }}
+{% endfor %}
+{% endif %}
+
+exec secrets.cfg

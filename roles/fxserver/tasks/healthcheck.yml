@@ -1,0 +1,9 @@
+- name: Wait for status 200 from {{ fxserver_healthcheck_url }}
+  ansible.builtin.uri:
+    url: "{{ fxserver_healthcheck_url }}"
+    status_code: 200
+    timeout: 5
+  register: __fxserver_health
+  until: __fxserver_health.status | default(0) == 200
+  retries: "{{ ((fxserver_healthcheck_timeout | int) / 5) | round(0, 'ceil') | int }}"
+  delay: 5

@@ -1,5 +1,5 @@
 # Caller: lint, tests and the full-history secret scan on every pull request and push to main,
-# plus the Molecule scenario of every role on each platform on pull requests, by hand and weekly.
+# plus every Molecule scenario of every role on each platform on pull requests, by hand and weekly.
 # Required checks for the main ruleset: "ci / lint-test" and "secrets / gitleaks".
 name: ci
 
@@ -47,14 +47,15 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: List the Molecule jobs (role x platform)
+      - name: List the Molecule jobs (role x scenario x platform)
         id: list
         run: python3 scripts/molecule_scenarios.py --github-output
 
   molecule-scenario:
-    # One job per role and platform, so that a failure names its platform and each platform has
-    # its own time limit. Entries: {role, platform, instance} from scripts/molecule_scenarios.py.
-    name: molecule-scenario (${{ matrix.role }}, ${{ matrix.platform }})
+    # One job per role, scenario and platform, so that a failure names its scenario and platform
+    # and each one has its own time limit. Entries: {role, scenario, platform, instance} from
+    # scripts/molecule_scenarios.py.
+    name: molecule-scenario (${{ matrix.role }}, ${{ matrix.scenario }}, ${{ matrix.platform }})
     needs: plan
     # Not on pushes to main: the pull request ran them on the same changes. "molecule" is not a
     # required check, so a pull request can merge while it is red or still running; the weekly
@@ -81,17 +82,19 @@ jobs:
           "$RUNNER_TEMP/venv/bin/pip" install --quiet --require-hashes --only-binary=:all: -r requirements-test.txt
           echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
 
-      - name: molecule test (one platform)
+      - name: molecule test (one scenario, one platform)
         env:
           ROLE: ${{ matrix.role }}
+          SCENARIO: ${{ matrix.scenario }}
           INSTANCE: ${{ matrix.instance }}
         run: |
           set -euo pipefail
           cd "roles/${ROLE}"
-          molecule test --platform-name "${INSTANCE}"
+          molecule test --scenario-name "${SCENARIO}" --platform-name "${INSTANCE}"
 
   molecule:
-    # One stable check name for the whole matrix (the scenario jobs are named per role and platform).
+    # One stable check name for the whole matrix (the scenario jobs are named per role, scenario
+    # and platform).
     name: molecule
     needs: [plan, molecule-scenario]
     if: ${{ always() }}

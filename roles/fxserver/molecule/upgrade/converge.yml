@@ -1,0 +1,14 @@
+- name: Converge (fake build 35245, server-data from git)
+  hosts: all
+  vars:
+    fxserver_build: 35245
+    fxserver_artifact_url: file:///opt/fake/35245/fx.tar.xz
+    fxserver_artifact_sha256: "{{ fxserver_test_fake_artifact.stat.checksum }}"
+  pre_tasks:
+    - name: Read the sha256 of the fake artifact (built in prepare.yml)
+      ansible.builtin.stat:
+        path: /opt/fake/35245/fx.tar.xz
+        checksum_algorithm: sha256
+      register: fxserver_test_fake_artifact
+  roles:
+    - role: fxserver

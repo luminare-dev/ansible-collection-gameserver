@@ -1,0 +1,12 @@
+# {{ ansible_managed }}
+# luminare.gameserver.fxserver: when fxserver-backup.service runs.
+[Unit]
+Description=Back up the game server data on a schedule (fxserver-backup)
+
+[Timer]
+OnCalendar={{ fxserver_backup_timer_on_calendar }}
+RandomizedDelaySec=10min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

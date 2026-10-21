@@ -1,0 +1,168 @@
+- name: Gather the minimal facts the role needs
+  ansible.builtin.setup:
+    gather_subset:
+      - min
+  when: ansible_facts['os_family'] is not defined or ansible_facts['architecture'] is not defined
+
+- name: Check the platform (Debian or Ubuntu on x86_64; the server is built for x86_64 only)
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['os_family'] == 'Debian'
+      - ansible_facts['architecture'] == 'x86_64'
+    fail_msg: >-
+      luminare.gameserver.fxserver supports Debian and Ubuntu on x86_64; this host is
+      {{ ansible_facts['distribution'] | default('unknown') }} on {{ ansible_facts['architecture'] }}.
+    quiet: true
+
+- name: Check the build, port and retention settings
+  ansible.builtin.assert:
+    that:
+      - fxserver_build | int > 0
+      - fxserver_keep_builds | int >= 1
+      - fxserver_backup_keep | int >= 1
+      - fxserver_game_port | int >= 1 and fxserver_game_port | int <= 65535
+      - fxserver_healthcheck_timeout | int >= 5
+      - >-
+        fxserver_journald_retention == ''
+        or fxserver_journald_retention is match('^[0-9]+(s|min|h|day|week|month|year)$')
+      - fxserver_backup_paths | length > 0
+      - (fxserver_backup_paths + fxserver_backup_exclude) | reject('match', '^/[^ \t\r\n]+$') | list | length == 0
+    fail_msg: >-
+      Invalid setting: fxserver_build must be a positive build number, fxserver_keep_builds and
+      fxserver_backup_keep at least 1, fxserver_game_port 1-65535, fxserver_healthcheck_timeout at
+      least 5 seconds, fxserver_journald_retention a journald time span such as 14day (or ""), and
+      fxserver_backup_paths/fxserver_backup_exclude absolute paths without spaces.
+    quiet: true
+
+- name: Check the firewall sources (IPv4 or IPv6 addresses or networks)
+  ansible.builtin.assert:
+    that:
+      - >-
+        item is match('^[0-9]{1,3}([.][0-9]{1,3}){3}(/[0-9]{1,2})?$')
+        or item is match('^[0-9A-Fa-f:]*:[0-9A-Fa-f:.]*(/[0-9]{1,3})?$')
+    fail_msg: "fxserver_firewall_sources: '{{ item }}' is not an IPv4 or IPv6 address or network."
+    quiet: true
+  loop: "{{ fxserver_firewall_sources }}"
+
+- name: Check the server.cfg settings (limits from the platform documentation)
+  ansible.builtin.assert:
+    that:
+      - __fxserver_cfg.hostname | length <= 120
+      - __fxserver_cfg.project_name | length <= 40
+      - __fxserver_cfg.project_desc | length <= 250
+      - __fxserver_cfg.onesync in ['on', 'legacy', 'off']
+      - __fxserver_cfg.max_clients | int >= 1 and __fxserver_cfg.max_clients | int <= 2048
+      - __fxserver_cfg.max_clients | int < 32 or __fxserver_cfg.onesync in ['on', 'legacy']
+      - __fxserver_cfg.max_clients | int <= 64 or __fxserver_cfg.onesync == 'on'
+      - (__fxserver_cfg | dict2items | map(attribute='key') | difference(__fxserver_cfg_defaults.keys())) | length == 0
+      - __fxserver_cfg_strings | map('string') | select('search', '["\r\n]') | list | length == 0
+      - __fxserver_cfg.resources | map('string') | reject('match', '^[A-Za-z0-9_.-]+$') | list | length == 0
+    fail_msg: >-
+      fxserver_cfg: hostname at most 120 characters, project_name 40, project_desc 250; onesync is
+      on, legacy or off; max_clients 1-2048, from 32 it needs onesync on or legacy and above 64
+      onesync on; endpoint, hostname, project_name, project_desc, locale and enforce_game_build
+      without quotes or line breaks (they are written into quoted server.cfg lines); resources
+      only letters, digits, "_", "." and "-"; known keys only
+      ({{ __fxserver_cfg_defaults.keys() | join(', ') }}).
+    quiet: true
+  vars:
+    __fxserver_cfg_strings: >-
+      {{ [__fxserver_cfg.endpoint, __fxserver_cfg.hostname, __fxserver_cfg.project_name,
+          __fxserver_cfg.project_desc, __fxserver_cfg.locale, __fxserver_cfg.enforce_game_build] }}
+  when: fxserver_server_data_repo | length == 0
+
+- name: Summarise the secret settings without their values
+  ansible.builtin.set_fact:
+    __fxserver_secret_checks:
+      license_key: >-
+        {{ 'missing' if fxserver_license_key | length == 0
+           else 'placeholder' if fxserver_license_key == 'CHANGE_ME_LICENSE_KEY'
+           else 'ok' if fxserver_license_key is match('^[A-Za-z0-9_-]+$')
+           else 'invalid' }}
+      perf_password: >-
+        {{ 'unset' if fxserver_perf_password | length == 0
+           else 'ok' if fxserver_perf_password | length >= 24 and fxserver_perf_password is match('^[^" \t\r\n]+$')
+           else 'invalid' }}
+      perf_user: "{{ 'ok' if fxserver_perf_user is match('^[A-Za-z0-9_.-]+$') else 'invalid' }}"
+      extra: >-
+        {{ 'ok' if (fxserver_secrets_cfg_extra | dict2items | rejectattr('key', 'match', '^[A-Za-z_][A-Za-z0-9_]*$')
+                    | list | length == 0)
+                 and (fxserver_secrets_cfg_extra.values() | map('string') | select('search', '["\n\r]')
+                      | list | length == 0)
+           else 'invalid' }}
+  no_log: true
+
+- name: Check the license key (the value is never shown)
+  ansible.builtin.assert:
+    that:
+      - __fxserver_secret_checks.license_key == 'ok' or fxserver_service_state != 'started'
+    fail_msg: >-
+      fxserver_license_key is {{ __fxserver_secret_checks.license_key }}. Set your server license key
+      from an encrypted variables file (example inventories use the placeholder
+      CHANGE_ME_LICENSE_KEY, which is refused); allowed characters are letters, digits, "_" and "-".
+    quiet: true
+
+- name: Check the other secrets (the values are never shown)
+  ansible.builtin.assert:
+    that:
+      - __fxserver_secret_checks.perf_password in ['unset', 'ok']
+      - __fxserver_secret_checks.perf_user == 'ok'
+      - __fxserver_secret_checks.extra == 'ok'
+    fail_msg: >-
+      fxserver_perf_password must be empty or at least 24 characters without spaces or quotes,
+      fxserver_perf_user letters, digits, "_", "." and "-", and fxserver_secrets_cfg_extra a map of
+      convar names to values without quotes or line breaks.
+    quiet: true
+
+# The drop-in is written when fxserver_firewall_manage is true or /etc/nftables.d exists, and it
+# is validated together with /etc/nftables.conf by nft. Check both here, before anything changes,
+# instead of failing later with an unclear validate error.
+- name: Look for the nftables drop-in directory, /etc/nftables.conf and nft
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    get_checksum: false
+  loop:
+    - "{{ __fxserver_nft_dir }}"
+    - /etc/nftables.conf
+    - /usr/sbin/nft
+  register: __fxserver_nft_stat
+
+- name: Decide whether the role writes the firewall drop-in
+  ansible.builtin.set_fact:
+    __fxserver_firewall_write: "{{ fxserver_firewall_manage | bool or __fxserver_nft_stat.results[0].stat.exists }}"
+
+- name: Read /etc/nftables.conf (it must include the drop-in folder)
+  ansible.builtin.slurp:
+    src: /etc/nftables.conf
+  register: __fxserver_nft_conf
+  when:
+    - __fxserver_firewall_write | bool
+    - __fxserver_nft_stat.results[1].stat.exists
+
+# With fxserver_firewall_manage the role installs nftables itself (install.yml), so nft may be
+# missing at this point. Without the include line (as in the nftables package's own
+# /etc/nftables.conf) the drop-in would pass "nft --check" but never be loaded.
+- name: Require /etc/nftables.conf with the drop-in include, and nft, when the role writes the drop-in
+  vars:
+    __fxserver_nft_text: "{{ __fxserver_nft_conf.content | b64decode if __fxserver_nft_conf is not skipped else '' }}"
+    __fxserver_nft_missing: >-
+      {{ ([] if __fxserver_nft_stat.results[1].stat.exists else ['/etc/nftables.conf does not exist'])
+         + ([] if not __fxserver_nft_stat.results[1].stat.exists
+                  or (__fxserver_nft_text is search(__fxserver_nft_table_re, multiline=true)
+                      and __fxserver_nft_text is search(__fxserver_nft_include_re, multiline=true))
+            else ['/etc/nftables.conf does not define table inet filter and include "/etc/nftables.d/*.nft"'])
+         + ([] if fxserver_firewall_manage | bool or __fxserver_nft_stat.results[2].stat.exists
+            else ['nft is not installed']) }}
+  ansible.builtin.assert:
+    that:
+      - __fxserver_nft_missing | length == 0
+    fail_msg: >-
+      The role writes the game port drop-in {{ __fxserver_nft_dropin }}
+      ({{ 'fxserver_firewall_manage is true' if fxserver_firewall_manage | bool
+          else __fxserver_nft_dir ~ ' exists' }}) and checks it with "nft --check" together with
+      /etc/nftables.conf, but {{ __fxserver_nft_missing | join(' and ') }}. Set up the firewall
+      layout of the luminare.infra_edge base role first (nftables installed, /etc/nftables.conf
+      defines table inet filter and includes /etc/nftables.d/*.nft), or remove an unused
+      {{ __fxserver_nft_dir }}. Nothing was changed.
+    quiet: true
+  when: __fxserver_firewall_write | bool

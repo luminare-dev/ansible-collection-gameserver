@@ -55,6 +55,7 @@ build_ignore:
   - requirements-*.txt
   - roles/*/molecule
   - scripts
+  - tests/fake-artifact
   - tests/fixtures
   - tests/test_*.py
   - venv

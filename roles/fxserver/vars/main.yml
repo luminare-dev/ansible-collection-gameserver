@@ -1,0 +1,46 @@
+# Internal values of luminare.gameserver.fxserver (not meant to be overridden).
+
+# Values for the templated server.cfg; fxserver_cfg overrides single keys (see the role README).
+__fxserver_cfg_defaults:
+  endpoint: 0.0.0.0
+  hostname: Game server
+  project_name: Game server
+  project_desc: A game server set up with Ansible.
+  locale: en-US
+  max_clients: 32
+  onesync: "on"
+  enforce_game_build: ""
+  master1_disabled: true
+  lan: false
+  appear_allowlisted: true
+  request_paranoia: 1
+  resources: []
+  extra_lines: []
+__fxserver_cfg: "{{ __fxserver_cfg_defaults | combine(fxserver_cfg) }}"
+
+# /perf/ basic auth (sv_prometheusBasicAuthUser/Password in secrets.cfg).
+__fxserver_perf_user: "{{ fxserver_perf_user }}"
+__fxserver_perf_password: "{{ fxserver_perf_password }}"
+# /perf/ is never left open: build 35245 answers it without credentials when both convars are
+# empty. Without a configured password, server_data.yml keeps the one that secrets.cfg already
+# has (this line, written by the template) or makes a random one of 32 letters and digits.
+__fxserver_perf_password_line_re: '^set sv_prometheusBasicAuthPassword "([^" \t\r\n]{24,})"$'
+
+# acl (setfacl) lets Ansible hand its temporary module files to the service user for the git
+# checkout (become_user) when it connects as a non-root user, for example on a host without root
+# login. Without it that task fails; the Debian 13 and Ubuntu 24.04 base images lack acl.
+__fxserver_packages: >-
+  {{ ['ca-certificates', 'tar', 'xz-utils', 'zstd']
+     + (['git', 'acl'] if fxserver_server_data_repo | length > 0 else [])
+     + (['nftables'] if fxserver_firewall_manage | bool else []) }}
+
+__fxserver_unit_path: /etc/systemd/system/fxserver.service
+__fxserver_backup_script: /usr/local/sbin/fxserver-backup
+__fxserver_deploy_key_path: "{{ fxserver_base_dir }}/.ssh/server-data-deploy-key"
+__fxserver_journald_dropin: /etc/systemd/journald.conf.d/60-fxserver.conf
+__fxserver_nft_dir: /etc/nftables.d
+__fxserver_nft_dropin: /etc/nftables.d/45-fxserver.nft
+# /etc/nftables.conf must define table inet filter and include the drop-in folder (the layout of
+# the luminare.infra_edge base role).
+__fxserver_nft_table_re: '^[ \t]*table[ \t]+inet[ \t]+filter\b'
+__fxserver_nft_include_re: '^[ \t]*include[ \t]+"/etc/nftables[.]d/[*][.]nft"[ \t]*$'

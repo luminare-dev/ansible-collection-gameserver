@@ -1,0 +1,82 @@
+- name: Build the fake server artifact on the controller
+  hosts: localhost
+  gather_facts: false
+  vars:
+    repo_root: "{{ lookup('ansible.builtin.env', 'MOLECULE_PROJECT_DIRECTORY') }}/../.."
+    fake_build_py: "{{ repo_root }}/tests/fake-artifact/build.py"
+    fake_out: "{{ lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}/fake"
+  tasks:
+    - name: Build fake build 35245
+      ansible.builtin.command:
+        argv:
+          - "{{ ansible_playbook_python }}"
+          - -I
+          - "{{ fake_build_py }}"
+          - --build
+          - "35245"
+          - --out
+          - "{{ fake_out }}/35245/fx.tar.xz"
+        creates: "{{ fake_out }}/35245/fx.tar.xz"
+
+- name: Prepare the test host
+  hosts: all
+  gather_facts: false
+  vars:
+    fake_out: "{{ lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}/fake"
+  tasks:
+    - name: Install nftables (the luminare.infra_edge base role does this on a real host)
+      ansible.builtin.apt:
+        name: nftables
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    # A minimal /etc/nftables.conf in the layout of the luminare.infra_edge base role, so that the
+    # drop-in can be validated without that collection.
+    - name: Write /etc/nftables.conf (input policy drop, drop-ins included last)
+      ansible.builtin.copy:
+        dest: /etc/nftables.conf
+        owner: root
+        group: root
+        mode: "0755"
+        content: |
+          #!/usr/sbin/nft -f
+          flush ruleset
+          table inet filter {
+            chain input {
+              type filter hook input priority filter; policy drop;
+              iif "lo" accept
+              ct state established,related accept
+            }
+            chain forward {
+              type filter hook forward priority filter; policy drop;
+            }
+            chain output {
+              type filter hook output priority filter; policy accept;
+            }
+          }
+          include "/etc/nftables.d/*.nft"
+
+    - name: Create the drop-in directory /etc/nftables.d
+      ansible.builtin.file:
+        path: /etc/nftables.d
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Create the folder for the fake artifact
+      ansible.builtin.file:
+        path: /opt/fake/35245
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Copy the fake artifact to the test host
+      ansible.builtin.copy:
+        src: "{{ fake_out }}/35245/fx.tar.xz"
+        dest: /opt/fake/35245/fx.tar.xz
+        owner: root
+        group: root
+        mode: "0644"

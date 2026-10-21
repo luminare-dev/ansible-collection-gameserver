@@ -1,0 +1,19 @@
+galaxy_info:
+  author: Luminare Development
+  description: >-
+    Install, update, roll back and back up a game server (FXServer) as a hardened systemd service
+  license: Apache-2.0
+  min_ansible_version: "2.21"
+  platforms:
+    - name: Debian
+      versions:
+        - trixie
+    - name: Ubuntu
+      versions:
+        - noble
+  galaxy_tags:
+    - gameserver
+    - fxserver
+    - systemd
+    - backup
+dependencies: []
