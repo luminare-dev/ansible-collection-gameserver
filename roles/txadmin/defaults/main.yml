@@ -1,0 +1,42 @@
+# Defaults of luminare.gameserver.txadmin. Every variable is described in meta/argument_specs.yml
+# and in the role README; secrets belong in an encrypted variables file, never here.
+
+# Web port and address of txAdmin (TXHOST_TXA_PORT, TXHOST_INTERFACE, TXHOST_TXA_URL). Keep
+# txadmin_interface empty: txAdmin then listens on every IPv4 address and leaves the game server's
+# endpoints alone. Any address also forces every endpoint_add_* line of server.cfg onto it, so
+# 127.0.0.1 would hide the game server (the role refuses loopback addresses). The nftables drop-in
+# below keeps the port closed to everyone but this host and txadmin_firewall_sources.
+txadmin_port: 40120
+txadmin_interface: ""
+txadmin_public_url: ""
+
+# Limits and behaviour (0 or "" leaves the variable out of the environment file).
+txadmin_max_slots: 0
+txadmin_game_name: ""
+txadmin_fxs_port: 0
+txadmin_quiet_mode: true
+txadmin_ignore_deprecated_configs: true
+
+# Secrets, written only to the environment file (mode 0600, root). Example inventories leave them
+# empty; never commit real values.
+txadmin_api_token: ""
+txadmin_default_account_name: ""
+txadmin_default_account_fivem_id: ""
+txadmin_default_account_password_hash: ""
+txadmin_deployer_prefill: {}
+
+# Observability toggle: /perf/ basic auth in secrets.cfg. The fxserver role writes secrets.cfg and
+# reads this variable too, so set it in the inventory or the play, not only for this role.
+txadmin_prometheus_basic_auth:
+  enabled: false
+  user: prometheus
+  password: ""
+
+# Firewall drop-in /etc/nftables.d/40-txadmin.nft (luminare.infra_edge base role layout).
+txadmin_firewall_manage: false
+txadmin_firewall_required: true
+txadmin_firewall_reload: true
+txadmin_firewall_sources: []
+
+# Seconds to wait for txAdmin's web page after a restart.
+txadmin_healthcheck_timeout: 120

@@ -1,0 +1,6 @@
+# {{ ansible_managed }}
+# luminare.gameserver.txadmin: txAdmin settings for fxserver.service, which runs txAdmin
+# (fxserver_mode: txadmin of the fxserver role). The TXHOST_* variables are in
+# {{ __txadmin_env_file }} (mode 0600, read by systemd as root).
+[Service]
+EnvironmentFile={{ __txadmin_env_file }}

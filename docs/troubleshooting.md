@@ -103,6 +103,53 @@ of these headers.)
 probe) and not through a proxy that adds `Via`; `systemctl restart fxserver` clears the blocked
 addresses. For the templated `server.cfg`, `fxserver_cfg.request_paranoia` sets the level (0-3).
 
+## The txadmin role says "fxserver.service is … starting the server directly"
+
+**Cause:** the unit starts `run.sh +exec server.cfg`, which runs the game server without txAdmin,
+so txAdmin's settings would do nothing. The fxserver role ran without `fxserver_mode: txadmin`,
+or the txadmin role ran before it.
+
+**Fix:** set `fxserver_mode: txadmin` in the inventory and list
+`luminare.gameserver.fxserver` before `luminare.gameserver.txadmin` in the play.
+
+## The txadmin role refuses `txadmin_interface: 127.0.0.1`
+
+**Cause:** txAdmin listens on `TXHOST_INTERFACE` and also forces every `endpoint_add_*` line of
+`server.cfg` onto it, so with a loopback address no player could reach the game server (see the
+[txadmin README](../roles/txadmin/README.md#the-txhost_interface-gotcha)).
+
+**Fix:** leave `txadmin_interface` empty. Port 40120 stays private through
+`/etc/nftables.d/40-txadmin.nft` (loopback and `txadmin_firewall_sources` only); reach the panel
+through an SSH tunnel or a tunnel connector.
+
+## The txadmin role stops because it cannot write `40-txadmin.nft`
+
+**Cause:** `/etc/nftables.d` does not exist and `txadmin_firewall_manage` is `false`, or
+`/etc/nftables.conf` lacks `table inet filter` or the line `include "/etc/nftables.d/*.nft"`.
+Without the drop-in, port 40120 would be open on every IPv4 address.
+
+**Fix:** set up the firewall layout of the `luminare.infra_edge` base role, or write an
+`/etc/nftables.conf` of that shape and set `txadmin_firewall_manage: true`. Only when another
+firewall already blocks the port, set `txadmin_firewall_required: false`.
+
+## The txadmin role says secrets.cfg does not set the `/perf/` credentials
+
+**Cause:** `txadmin_prometheus_basic_auth` is enabled, but the fxserver role, which writes
+`secrets.cfg`, did not see it: it was set only for the txadmin role (role `vars:`), or the
+fxserver role did not run first in the same play. With `fxserver_perf_password` set as well, the
+fxserver role stops earlier and says that the credentials come from two places.
+
+**Fix:** set `txadmin_prometheus_basic_auth` in `group_vars`, `host_vars` or the play, leave
+`fxserver_perf_password` empty and run both roles in one play, fxserver first.
+
+## `/host/status` answers `{"error": "token missing"}` or `"token not configured"`
+
+**Cause:** txAdmin answers with status 200 and an `error` field when the request has no token or
+when `txadmin_api_token` is empty (the endpoint is off then).
+
+**Fix:** set `txadmin_api_token` and send it in the header:
+`curl -fsS -H "x-txadmin-envtoken: <token>" http://127.0.0.1:40120/host/status`.
+
 ## Still stuck?
 
 Search the issues, then ask in the organization's

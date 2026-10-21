@@ -1,9 +1,10 @@
 # luminare.gameserver.fxserver
 
 Installs a game server build (FXServer, for FiveM/RedM servers) on Debian 13 or Ubuntu 24.04 and
-runs it as a hardened systemd service. It updates and rolls back by switching one symbolic link,
-checks the server after every switch, and backs up server-data and txData before every switch
-and, if you want, every night.
+runs it as a hardened systemd service, either directly with `server.cfg` or under txAdmin, the
+admin panel that ships with the build (`fxserver_mode`). It updates and rolls back by switching
+one symbolic link, checks the server after every switch, and backs up server-data and txData
+before every switch and, if you want, every night.
 
 Not affiliated with or endorsed by Cfx.re, Rockstar Games or Take-Two.
 
@@ -25,7 +26,8 @@ Not affiliated with or endorsed by Cfx.re, Rockstar Games or Take-Two.
    it to `artifacts/<build>/` in one step. The downloaded archive is deleted afterwards.
 4. Sets the journald retention (`MaxRetentionSec`, default 14 days), writes the nftables drop-in
    `/etc/nftables.d/45-fxserver.nft` for the game port and installs the hardened unit
-   `fxserver.service`.
+   `fxserver.service`, which starts `run.sh +exec server.cfg` (`plain`) or `run.sh` alone, which
+   starts txAdmin (`txadmin`, see [Running under txAdmin](#running-under-txadmin)).
 5. Installs `/usr/local/sbin/fxserver-backup`, `fxserver-backup.service` and
    `fxserver-backup.timer`.
 6. When the build changes: stops the server and runs a backup (`pre-update-<old>-to-<new>`)
@@ -42,7 +44,7 @@ Not affiliated with or endorsed by Cfx.re, Rockstar Games or Take-Two.
    `artifacts/current` with one `rename(2)`.
 9. Restarts the server when the build, the unit, `server.cfg` or `secrets.cfg` changed. On every
    run that leaves the server started it then waits until `fxserver_healthcheck_url` (default
-   `/info.json` on the game port) answers with status 200. If that fails within
+   `/info.json` on the game port, or txAdmin's web page under txAdmin) answers with status 200. If that fails within
    `fxserver_healthcheck_timeout` seconds after a switch, the role switches back to the old build,
    restarts it, checks it again and fails the run with a message that names both builds.
 10. Removes builds beyond `fxserver_keep_builds` (never the active one; the previous one second)
@@ -118,12 +120,13 @@ Every variable is validated by `meta/argument_specs.yml`.
 | `fxserver_cfg` | dict | `{}` | Settings for the templated `server.cfg` (only without `fxserver_server_data_repo`); keys left out keep their defaults (table below). |
 | `fxserver_license_key` | str | `""` | Server license key, written to `secrets.cfg` as `sv_licenseKey`; secret. Required when `fxserver_service_state` is `started`; the placeholder `CHANGE_ME_LICENSE_KEY` is refused. |
 | `fxserver_perf_user` | str | `prometheus` | User name for `/perf/` (`sv_prometheusBasicAuthUser`). |
-| `fxserver_perf_password` | str | `""` | Password for `/perf/` (`sv_prometheusBasicAuthPassword`), at least 24 characters. Empty never leaves `/perf/` open: the role keeps the password that `secrets.cfg` already has or writes a random one ([`/perf/`](#perf)); set it to scrape `/perf/`. |
+| `fxserver_perf_password` | str | `""` | Password for `/perf/` (`sv_prometheusBasicAuthPassword`), at least 24 characters. Empty never leaves `/perf/` open: the role keeps the password that `secrets.cfg` already has or writes a random one ([`/perf/`](#perf)); set it to scrape `/perf/`. With the txadmin role's observability toggle (`txadmin_prometheus_basic_auth`) enabled, its user and password are written instead, and this variable must stay empty. |
 | `fxserver_secrets_cfg_extra` | dict | `{}` | Further secret convars for `secrets.cfg` as name/value pairs, for example `mysql_connection_string`. |
+| `fxserver_mode` | str | `plain` | `plain` starts the server directly with `server.cfg`; `txadmin` starts txAdmin, which starts the server after its one-time web setup ([Running under txAdmin](#running-under-txadmin)). |
 | `fxserver_game_port` | int | `30120` | Game port (tcp and udp); also used by the templated `server.cfg` and the firewall drop-in. |
 | `fxserver_service_enabled` | bool | `true` | Start `fxserver.service` at boot. |
 | `fxserver_service_state` | str | `started` | `started` or `stopped` after the run; the health check runs only for `started`. |
-| `fxserver_healthcheck_url` | str | `http://127.0.0.1:{{ fxserver_game_port }}/info.json` | URL that must answer with status 200 after every run; change it when the server does not listen on 127.0.0.1 (`fxserver_cfg.endpoint`). |
+| `fxserver_healthcheck_url` | str | `http://127.0.0.1:{{ fxserver_game_port }}/info.json`, or `http://127.0.0.1:40120/` with `fxserver_mode: txadmin` | URL that must answer with status 200 after every run; change it when the server (or txAdmin) does not listen on 127.0.0.1 or on that port. |
 | `fxserver_healthcheck_timeout` | int | `180` | Seconds to wait for the health check (at least 5). |
 | `fxserver_rollback_on_failure` | bool | `true` | When the health check fails after a build switch, switch back to the previous build and fail the run. |
 | `fxserver_journald_retention` | str | `14day` | `MaxRetentionSec` for journald (host-wide drop-in `60-fxserver.conf`); empty removes the drop-in. |
@@ -191,7 +194,8 @@ A server-data repository (`fxserver_server_data_repo`) brings its own `server.cf
 when `sv_prometheusBasicAuthUser` and `sv_prometheusBasicAuthPassword` are both empty (its source,
 `PerfHttpHandler.cpp`), so `secrets.cfg` always sets both:
 
-- with `fxserver_perf_password`, that password and `fxserver_perf_user`;
+- with `fxserver_perf_password` (or the txadmin role's observability toggle), that password and
+  `fxserver_perf_user`;
 - without it, the password that `secrets.cfg` already has from an earlier run, or on the first
   run a random password of 32 letters and digits. It stays in `secrets.cfg` on the host, so later
   runs keep it (`changed=0`); nothing that scrapes `/perf/` knows it.
@@ -209,6 +213,22 @@ Prometheus the same value.
   not used. On the host itself the same switch is one command; see the
   [upgrade guide](../../docs/upgrade.md), which also covers the Recommended-build policy and how
   to read the support window of a build from the version API.
+
+## Running under txAdmin
+
+With `fxserver_mode: txadmin` the unit starts `run.sh` without `+exec`; the server build then
+starts txAdmin instead of the game server (the server's launcher does this whenever `+exec` is
+missing). The unit also sets `TXHOST_DATA_PATH` to `fxserver_txdata_dir`, so txAdmin keeps its
+data in `/opt/fxserver/txData` from its first start on, inside the backups. txAdmin starts the
+game server only after its one-time web setup, in which you choose `fxserver_server_data_dir`
+and `server.cfg`; until then nothing answers on the game port. The default health check
+therefore waits for txAdmin's web page (`http://127.0.0.1:40120/`) instead of `/info.json`. The
+role still writes `server.cfg` (or checks out your repository) and `secrets.cfg`, which txAdmin's
+server runs.
+
+Configure txAdmin itself (port, default account, API token, firewall drop-in for port 40120) with
+[`luminare.gameserver.txadmin`](../txadmin/README.md) right after this role. A game port of
+40120-40150 is refused in this mode, because txAdmin keeps that range for itself.
 
 ## Backups
 
@@ -291,6 +311,10 @@ Two Molecule scenarios run in systemd containers on Debian 13 and Ubuntu 24.04 w
   only; at the end `/perf/` refuses a request without credentials and answers with the random
   password from `secrets.cfg`.
 
+The scenario of the [txadmin role](../txadmin/README.md#tests) runs this role with
+`fxserver_mode: txadmin` (the fake build then behaves like txAdmin) and checks the unit, the
+health check on txAdmin's web page and the `/perf/` toggle.
+
 ```bash
 cd roles/fxserver
 molecule test                    # default scenario, both platforms
@@ -301,8 +325,8 @@ molecule test -s upgrade         # update and rollback scenario
 
 - Tested only with the fake build. The unit's hardening (`ProtectSystem=strict`,
   `NoNewPrivileges` and the others) has not been run against a real, keyed server build.
-- The server is started directly with `server.cfg`; running it under txAdmin is not part of this
-  role.
+- Under txAdmin (`fxserver_mode: txadmin`) the health check shows only that txAdmin answers;
+  whether the game server runs depends on txAdmin's one-time web setup, which is manual.
 - In containers the nftables ruleset is validated but not loaded, so the effect of the drop-in on
   traffic is not proven by the tests.
 - A server with a valid license key appears in the public server list unless it runs LAN-only

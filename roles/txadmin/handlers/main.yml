@@ -1,0 +1,21 @@
+# Handlers run in this order: systemd reads the new drop-in before the service restarts.
+
+- name: Reload the systemd units for the txAdmin drop-in
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+
+# Only a running service is restarted, so a server stopped on purpose (fxserver_service_state:
+# stopped) stays stopped and reads the new settings at its next start.
+- name: Restart fxserver for the txAdmin settings
+  ansible.builtin.systemd_service:
+    name: "{{ __txadmin_unit }}"
+    state: restarted
+  when: __txadmin_service.status.ActiveState | default('inactive') in ['active', 'activating', 'reloading']
+
+# Loads /etc/nftables.conf with the new drop-in. Disable with txadmin_firewall_reload: false when
+# another tool loads the ruleset (the drop-in is validated either way).
+- name: Reload nftables for the txAdmin drop-in
+  ansible.builtin.systemd_service:
+    name: nftables.service
+    state: restarted
+  when: txadmin_firewall_reload | bool

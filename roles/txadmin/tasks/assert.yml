@@ -1,0 +1,283 @@
+# Every check runs before the first change, so a failed check leaves the host as it was. Secret
+# values are checked in no_log tasks that keep one word per check ("ok", "invalid", ...): a failed
+# check names the variable, never its value. txAdmin itself prints some invalid TXHOST_* values to
+# its log when it stops at boot, which is one more reason to refuse them here.
+
+- name: Check the port, address and limit settings
+  ansible.builtin.assert:
+    that:
+      - txadmin_port | int >= 1 and txadmin_port | int <= 65535 and txadmin_port | int != 30120
+      - txadmin_interface == '' or txadmin_interface is match(__txadmin_ipv4_re)
+      - >-
+        txadmin_public_url == ''
+        or (txadmin_public_url is match('^https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[!-~]*)?$')
+            and txadmin_public_url is match(__txadmin_safe_value_re))
+      - txadmin_max_slots | int >= 0 and txadmin_max_slots | int <= 2048
+      - >-
+        txadmin_fxs_port | int == 0
+        or (txadmin_fxs_port | int >= 1 and txadmin_fxs_port | int <= 65535
+            and (txadmin_fxs_port | int < 40120 or txadmin_fxs_port | int > 40150)
+            and txadmin_fxs_port | int != txadmin_port | int)
+      - txadmin_healthcheck_timeout | int >= 5
+    fail_msg: >-
+      Invalid setting: txadmin_port must be 1-65535 and not 30120 (txAdmin refuses the default
+      game port), txadmin_interface empty or an IPv4 address, txadmin_public_url empty or an
+      http(s) URL without spaces, quotes or backslashes, txadmin_max_slots 0-2048 (0 = not set),
+      txadmin_fxs_port 0 (not set) or a port outside 40120-40150 that is not txadmin_port, and
+      txadmin_healthcheck_timeout at least 5 seconds. Nothing was changed.
+    quiet: true
+
+# The TXHOST_INTERFACE gotcha: txAdmin binds its web port to this address and also requires every
+# endpoint_add_* line of server.cfg to use it (txAdmin 8.1.1, fxsConfigHelper.ts).
+- name: Refuse a loopback address for TXHOST_INTERFACE (it would hide the game server)
+  ansible.builtin.assert:
+    that:
+      - txadmin_interface is not match('^127[.]')
+    fail_msg: >-
+      txadmin_interface is {{ txadmin_interface }}, a loopback address. txAdmin binds its web port
+      to TXHOST_INTERFACE and also forces every endpoint_add_* line of server.cfg onto that
+      address, so the game server would only listen on loopback and no player could connect.
+      Leave txadmin_interface empty and keep the web port private with the nftables drop-in
+      (txadmin_firewall_sources) or a tunnel. Nothing was changed.
+    quiet: true
+
+- name: Check the firewall sources (addresses or networks, never everyone)
+  ansible.builtin.assert:
+    that:
+      - >-
+        item is match('^[0-9]{1,3}([.][0-9]{1,3}){3}(/[0-9]{1,2})?$')
+        or item is match('^[0-9A-Fa-f:]*:[0-9A-Fa-f:.]*(/[0-9]{1,3})?$')
+      - item is not search('/0+$')
+    fail_msg: >-
+      txadmin_firewall_sources: '{{ item }}' is not an IPv4 or IPv6 address or network, or it is a
+      /0 network (everyone). txAdmin's web port is never public; list single addresses or private
+      networks, for example the host that runs the tunnel connector. Nothing was changed.
+    quiet: true
+  loop: "{{ txadmin_firewall_sources }}"
+
+- name: Summarise the secret settings without their values
+  ansible.builtin.set_fact:
+    __txadmin_secret_checks:
+      api_token: >-
+        {{ 'unset' if txadmin_api_token | length == 0
+           else 'disabled' if txadmin_api_token == 'disabled'
+           else 'a placeholder' if txadmin_api_token is match('(?i)^change_?me')
+           else 'ok' if txadmin_api_token is match('^[A-Za-z0-9_-]{16,48}$')
+           else 'invalid' }}
+      account: >-
+        {{ ('unset' if (txadmin_default_account_fivem_id | string ~ txadmin_default_account_password_hash) | length == 0
+            else 'no name')
+           if txadmin_default_account_name | length == 0
+           else 'ok' if (txadmin_default_account_name is match('^[A-Za-z0-9_][A-Za-z0-9_.-]{1,18}[A-Za-z0-9_]$')
+                         and txadmin_default_account_name is not search('[._-]{2}')
+                         and txadmin_default_account_fivem_id | string is match('^([0-9]{1,8})?$')
+                         and txadmin_default_account_password_hash is match(__txadmin_bcrypt_re)
+                         and (txadmin_default_account_fivem_id | string ~ txadmin_default_account_password_hash)
+                             | length > 0)
+           else 'invalid' }}
+      prefill: >-
+        {{ 'unknown key' if (txadmin_deployer_prefill.keys() | difference(__txadmin_prefill_names.keys()))
+                            | length > 0
+           else 'invalid value' if (txadmin_deployer_prefill.values() | map('string')
+                                    | reject('match', __txadmin_safe_value_re) | list | length > 0)
+           else 'invalid port' if (txadmin_deployer_prefill.db_port | default('') | string)
+                                  is not match('^([0-9]{1,5})?$')
+           else 'invalid license key' if (txadmin_deployer_prefill.license_key | default('') | string)
+                                         is not match(__txadmin_license_key_re)
+           else 'ok' }}
+      perf: >-
+        {{ 'off' if not __txadmin_perf.enabled | bool
+           else 'ok' if (__txadmin_perf.user | string is match('^[A-Za-z0-9_.-]+$')
+                         and __txadmin_perf.password | string | length >= 24
+                         and __txadmin_perf.password | string is match('^[^" \t\r\n]+$')
+                         and __txadmin_perf.password | string is not match('(?i)^change_?me'))
+           else 'invalid' }}
+  no_log: true
+
+- name: Check the API token (the value is never shown)
+  ansible.builtin.assert:
+    that:
+      - __txadmin_secret_checks.api_token in ['unset', 'ok']
+    fail_msg: >-
+      txadmin_api_token is {{ __txadmin_secret_checks.api_token }}. Leave it empty (the
+      /host/status endpoint stays off) or set 16-48 letters, digits, "_" or "-", txAdmin's rule;
+      "disabled", which makes /host/status answer without a token, is not supported, and neither
+      is a CHANGE_ME placeholder. Nothing was changed.
+    quiet: true
+
+- name: Check the default account (the values are never shown)
+  ansible.builtin.assert:
+    that:
+      - __txadmin_secret_checks.account in ['unset', 'ok']
+    fail_msg: >-
+      The default account is {{ __txadmin_secret_checks.account }}: txadmin_default_account_name
+      needs 3-20 letters, digits, "_", "." or "-" (starting and ending with a letter, digit or "_",
+      no two special characters in a row), txadmin_default_account_fivem_id is empty or 1-8 digits,
+      txadmin_default_account_password_hash is empty or a bcrypt hash ($2a$, $2b$ or $2y$), and at
+      least one of the two is set. Nothing was changed.
+    quiet: true
+
+- name: Check the deployer pre-fill (the values are never shown)
+  ansible.builtin.assert:
+    that:
+      - __txadmin_secret_checks.prefill == 'ok'
+    fail_msg: >-
+      txadmin_deployer_prefill has an {{ __txadmin_secret_checks.prefill }}: the keys are
+      {{ __txadmin_prefill_names.keys() | join(', ') }}; values must not be empty, start or end
+      with a space or a quote, or hold a backslash or a line break; db_port is a number and
+      license_key a server license key in the format txAdmin accepts (the placeholder
+      CHANGE_ME_LICENSE_KEY is refused). Nothing was changed.
+    quiet: true
+
+- name: Check the observability toggle (the password is never shown)
+  ansible.builtin.assert:
+    that:
+      - __txadmin_secret_checks.perf in ['off', 'ok']
+    fail_msg: >-
+      txadmin_prometheus_basic_auth is enabled, but its user must be letters, digits, "_", "." and
+      "-", and its password at least 24 characters without spaces or quotes and not a CHANGE_ME
+      placeholder. Nothing was changed.
+    quiet: true
+
+- name: Read fxserver.service (installed by luminare.gameserver.fxserver)
+  ansible.builtin.systemd_service:
+    name: "{{ __txadmin_unit }}"
+  register: __txadmin_service
+
+# Without "+exec" the server build starts txAdmin (code/server/launcher/src/Server.cpp of the
+# server); with "+exec server.cfg" it starts the game server alone and these settings do nothing.
+- name: Check that fxserver.service runs txAdmin
+  ansible.builtin.assert:
+    that:
+      - __txadmin_service.status.LoadState | default('not-found') == 'loaded'
+      - __txadmin_service.status.ExecStart | default('') is search('/run[.]sh')
+      - __txadmin_service.status.ExecStart | default('') is not search('[+]exec')
+      - __txadmin_service.status.WorkingDirectory | default('') is match('^/')
+    fail_msg: >-
+      fxserver.service is {{ 'missing' if __txadmin_service.status.LoadState | default('not-found') != 'loaded'
+      else 'starting the server directly (run.sh +exec server.cfg), so txAdmin never runs' }}. Run
+      luminare.gameserver.fxserver with fxserver_mode: txadmin before this role. Nothing was
+      changed.
+    quiet: true
+
+- name: Read server.cfg (checked against the limits that txAdmin enforces)
+  ansible.builtin.slurp:
+    src: "{{ __txadmin_service.status.WorkingDirectory }}/server.cfg"
+  register: __txadmin_server_cfg
+  when: txadmin_max_slots | int > 0 or txadmin_interface | length > 0 or txadmin_fxs_port | int > 0
+
+- name: Check server.cfg against TXHOST_MAX_SLOTS, TXHOST_INTERFACE and TXHOST_FXS_PORT
+  vars:
+    __txadmin_cfg_text: "{{ __txadmin_server_cfg.content | b64decode }}"
+    __txadmin_cfg_slots: >-
+      {{ __txadmin_cfg_text | regex_findall(__txadmin_maxclients_re, multiline=true, ignorecase=true) }}
+    __txadmin_cfg_endpoints: >-
+      {{ __txadmin_cfg_text | regex_findall(__txadmin_endpoint_re, multiline=true, ignorecase=true) }}
+  ansible.builtin.assert:
+    that:
+      - >-
+        txadmin_max_slots | int == 0 or __txadmin_cfg_slots | length == 0
+        or __txadmin_cfg_slots | last | int <= txadmin_max_slots | int
+      - >-
+        txadmin_interface == ''
+        or __txadmin_cfg_endpoints | reject('match', (txadmin_interface | regex_escape) ~ ':') | list | length == 0
+      - >-
+        txadmin_fxs_port | int == 0
+        or __txadmin_cfg_endpoints | reject('match', '.*:' ~ txadmin_fxs_port ~ '$') | list | length == 0
+    fail_msg: >-
+      txAdmin would refuse to start the server with
+      {{ __txadmin_service.status.WorkingDirectory }}/server.cfg (sv_maxclients
+      {{ __txadmin_cfg_slots | last | default('not set') }}, endpoints
+      {{ __txadmin_cfg_endpoints | join(', ') }}): with txadmin_max_slots set, sv_maxclients must
+      not be higher; with txadmin_interface set, every endpoint must use that address; with
+      txadmin_fxs_port set, every endpoint must use that port. Nothing was changed.
+    quiet: true
+  when: __txadmin_server_cfg is not skipped
+
+- name: Read secrets.cfg (the observability toggle must have reached it)
+  ansible.builtin.slurp:
+    src: "{{ __txadmin_service.status.WorkingDirectory }}/secrets.cfg"
+  register: __txadmin_secrets_cfg
+  no_log: true
+  when: __txadmin_perf.enabled | bool
+
+- name: Compare secrets.cfg with the observability toggle without showing either
+  vars:
+    __txadmin_secret_lines: "{{ (__txadmin_secrets_cfg.content | b64decode).splitlines() | map('trim') | list }}"
+  ansible.builtin.set_fact:
+    __txadmin_perf_written: >-
+      {{ ('set sv_prometheusBasicAuthUser "' ~ __txadmin_perf.user ~ '"') in __txadmin_secret_lines
+         and ('set sv_prometheusBasicAuthPassword "' ~ __txadmin_perf.password ~ '"') in __txadmin_secret_lines }}
+  no_log: true
+  when: __txadmin_perf.enabled | bool
+
+- name: Check that secrets.cfg holds the /perf/ credentials of the toggle
+  ansible.builtin.assert:
+    that:
+      - __txadmin_perf_written | bool
+    fail_msg: >-
+      txadmin_prometheus_basic_auth is enabled, but {{ __txadmin_service.status.WorkingDirectory }}/secrets.cfg
+      does not set sv_prometheusBasicAuthUser and sv_prometheusBasicAuthPassword to its values.
+      The fxserver role writes secrets.cfg and reads this toggle too: set
+      txadmin_prometheus_basic_auth in the inventory or the play (not only for this role), leave
+      fxserver_perf_password empty and run luminare.gameserver.fxserver before this role. Nothing
+      was changed.
+    quiet: true
+  when: __txadmin_perf.enabled | bool
+
+# The drop-in is written when txadmin_firewall_manage is true or /etc/nftables.d exists. It only
+# protects the port when /etc/nftables.conf includes the drop-in folder, so that is checked too.
+- name: Look for the nftables drop-in directory, /etc/nftables.conf and nft
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    get_checksum: false
+  loop:
+    - "{{ __txadmin_nft_dir }}"
+    - /etc/nftables.conf
+    - /usr/sbin/nft
+  register: __txadmin_nft_stat
+
+- name: Decide whether the role writes the firewall drop-in
+  ansible.builtin.set_fact:
+    __txadmin_firewall_write: "{{ txadmin_firewall_manage | bool or __txadmin_nft_stat.results[0].stat.exists }}"
+
+- name: Refuse to leave the web port without the firewall drop-in
+  ansible.builtin.assert:
+    that:
+      - __txadmin_firewall_write | bool or not txadmin_firewall_required | bool
+    fail_msg: >-
+      txAdmin listens on port {{ txadmin_port }} of every IPv4 address, but {{ __txadmin_nft_dir }}
+      does not exist and txadmin_firewall_manage is false, so the role cannot write
+      {{ __txadmin_nft_dropin }}. Set up the firewall layout of the luminare.infra_edge base role
+      (/etc/nftables.conf with input policy drop that includes /etc/nftables.d/*.nft), or set
+      txadmin_firewall_manage: true with such an /etc/nftables.conf, or, only when another firewall
+      already blocks the port, set txadmin_firewall_required: false. Nothing was changed.
+    quiet: true
+
+- name: Read /etc/nftables.conf
+  ansible.builtin.slurp:
+    src: /etc/nftables.conf
+  register: __txadmin_nft_conf
+  when:
+    - __txadmin_firewall_write | bool
+    - __txadmin_nft_stat.results[1].stat.exists
+
+# With txadmin_firewall_manage the role installs nftables itself, so nft may be missing here.
+- name: Require /etc/nftables.conf with table inet filter and the drop-in include, and nft
+  vars:
+    __txadmin_nft_text: "{{ __txadmin_nft_conf.content | b64decode if __txadmin_nft_conf is not skipped else '' }}"
+  ansible.builtin.assert:
+    that:
+      - __txadmin_nft_stat.results[1].stat.exists
+      - txadmin_firewall_manage | bool or __txadmin_nft_stat.results[2].stat.exists
+      - __txadmin_nft_text is search(__txadmin_nft_table_re, multiline=true)
+      - __txadmin_nft_text is search(__txadmin_nft_include_re, multiline=true)
+    fail_msg: >-
+      The role writes {{ __txadmin_nft_dropin }} and checks it with "nft --check" together with
+      /etc/nftables.conf. That needs nft (installed: {{ __txadmin_nft_stat.results[2].stat.exists }})
+      and an /etc/nftables.conf (present: {{ __txadmin_nft_stat.results[1].stat.exists }}) that
+      defines table inet filter and has the line include "/etc/nftables.d/*.nft"; without that
+      line the rules would never be loaded. Set up the firewall layout of the luminare.infra_edge
+      base role first. Nothing was changed.
+    quiet: true
+  when: __txadmin_firewall_write | bool

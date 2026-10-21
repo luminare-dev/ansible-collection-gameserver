@@ -30,7 +30,7 @@ def readme_variables(role: Path) -> set[str]:
 @unittest.skipIf(yaml is None, "PyYAML is not installed")
 class RoleVariablesTest(unittest.TestCase):
     def test_there_are_roles(self):
-        self.assertIn("fxserver", [r.name for r in ROLES])
+        self.assertEqual({"fxserver", "txadmin"} - {r.name for r in ROLES}, set())
 
     def test_defaults_specs_and_readme_agree(self):
         for role in ROLES:
@@ -52,13 +52,36 @@ class RoleVariablesTest(unittest.TestCase):
                     self.assertTrue(option.get("description"))
 
     def test_secret_options_are_marked_no_log(self):
-        specs = yaml.safe_load((ROOT / "roles" / "fxserver" / "meta" / "argument_specs.yml").read_text(encoding="utf-8"))
-        options = specs["argument_specs"]["main"]["options"]
-        for name in ("fxserver_license_key", "fxserver_perf_password", "fxserver_server_data_deploy_key",
-                     "fxserver_secrets_cfg_extra"):
-            with self.subTest(option=name):
-                self.assertIs(options[name].get("no_log"), True)
-                self.assertEqual(options[name]["default"], {} if name.endswith("_extra") else "")
+        secrets = {
+            "fxserver": ("fxserver_license_key", "fxserver_perf_password", "fxserver_server_data_deploy_key",
+                         "fxserver_secrets_cfg_extra"),
+            "txadmin": ("txadmin_api_token", "txadmin_default_account_password_hash", "txadmin_deployer_prefill"),
+        }
+        for role, names in secrets.items():
+            specs = yaml.safe_load((ROOT / "roles" / role / "meta" / "argument_specs.yml").read_text(encoding="utf-8"))
+            options = specs["argument_specs"]["main"]["options"]
+            for name in names:
+                with self.subTest(option=name):
+                    self.assertIs(options[name].get("no_log"), True)
+                    self.assertIn(options[name]["default"], ("", {}), "secrets have no default value")
+
+    def test_txadmin_toggle_password_is_marked_no_log(self):
+        specs = yaml.safe_load((ROOT / "roles" / "txadmin" / "meta" / "argument_specs.yml").read_text(encoding="utf-8"))
+        toggle = specs["argument_specs"]["main"]["options"]["txadmin_prometheus_basic_auth"]
+        self.assertIs(toggle["options"]["password"].get("no_log"), True)
+        self.assertEqual(toggle["default"]["password"], "")
+
+    def test_defaults_match_the_documented_defaults(self):
+        """argument_specs defaults equal defaults/main.yml wherever the default is not a template."""
+        for role in ROLES:
+            defaults = yaml.safe_load((role / "defaults" / "main.yml").read_text(encoding="utf-8"))
+            specs = yaml.safe_load((role / "meta" / "argument_specs.yml").read_text(encoding="utf-8"))
+            for name, option in specs["argument_specs"]["main"]["options"].items():
+                value = defaults[name]
+                if "{{" in str(value):
+                    continue
+                with self.subTest(role=role.name, option=name):
+                    self.assertEqual(option.get("default"), value)
 
 
 if __name__ == "__main__":

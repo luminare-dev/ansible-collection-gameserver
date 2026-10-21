@@ -1,0 +1,13 @@
+# {{ ansible_managed }}
+# luminare.gameserver.txadmin: txAdmin web port {{ txadmin_port }} (tcp) from this host (loopback) and
+# txadmin_firewall_sources only; nobody else can reach it.
+# Included by /etc/nftables.conf after table inet filter (input policy drop): accept rules only.
+{% set v4 = txadmin_firewall_sources | reject('search', ':') | list %}
+{% set v6 = txadmin_firewall_sources | select('search', ':') | list %}
+add rule inet filter input iif "lo" tcp dport {{ txadmin_port }} accept
+{% if v4 | length > 0 %}
+add rule inet filter input ip saddr { {{ v4 | join(', ') }} } tcp dport {{ txadmin_port }} accept
+{% endif %}
+{% if v6 | length > 0 %}
+add rule inet filter input ip6 saddr { {{ v6 | join(', ') }} } tcp dport {{ txadmin_port }} accept
+{% endif %}

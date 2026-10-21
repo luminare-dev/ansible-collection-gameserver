@@ -1,0 +1,16 @@
+# The fake build 35245 and a minimal /etc/nftables.conf in the layout of the luminare.infra_edge
+# base role (input policy drop, /etc/nftables.d/*.nft included last): the same preparation as the
+# fxserver role's default scenario, so both scenarios test against one firewall layout.
+- name: Prepare like the fxserver default scenario
+  ansible.builtin.import_playbook: ../../../fxserver/molecule/default/prepare.yml
+
+- name: Install the tools for the firewall test
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Install iproute2 (verify.yml builds a veth pair into a second network namespace)
+      ansible.builtin.apt:
+        name: iproute2
+        state: present
+        update_cache: true
+        cache_valid_time: 3600

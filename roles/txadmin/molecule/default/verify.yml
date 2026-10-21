@@ -1,0 +1,421 @@
+- name: Verify
+  hosts: all
+  gather_facts: false
+  vars:
+    env_file: /etc/fxserver/txadmin.env
+    dropin: /etc/systemd/system/fxserver.service.d/10-txadmin.conf
+    nft_dropin: /etc/nftables.d/40-txadmin.nft
+    txdata: /opt/fxserver/txData
+    server_data: /opt/fxserver/server-data
+    # Built from the inventory values, so that no test secret is written out here a second time.
+    expected_env:
+      - TXHOST_TXA_PORT=40120
+      - TXHOST_TXA_URL=https://demo-tx.example.com
+      - TXHOST_MAX_SLOTS=48
+      - TXHOST_GAME_NAME=fivem
+      - TXHOST_QUIET_MODE=true
+      - TXHOST_IGNORE_DEPRECATED_CONFIGS=true
+      - "{{ 'TXHOST_API_TOKEN=' ~ txadmin_api_token }}"
+      - "{{ 'TXHOST_DEFAULT_ACCOUNT=molecule_admin::' ~ txadmin_default_account_password_hash }}"
+      - TXHOST_DEFAULT_DBHOST=127.0.0.1
+      - "{{ 'TXHOST_DEFAULT_DBPASS=' ~ txadmin_deployer_prefill.db_password }}"
+      - TXHOST_DEFAULT_DBNAME=molecule_db
+    expected_nft:
+      - add rule inet filter input iif "lo" tcp dport 40120 accept
+      - add rule inet filter input ip saddr { 198.51.100.8/29 } tcp dport 40120 accept
+      - add rule inet filter input ip6 saddr { 2001:db8::/64 } tcp dport 40120 accept
+    quoted_value_re: "=[\"']"
+    secrets:
+      - "{{ txadmin_api_token }}"
+      - "{{ txadmin_default_account_password_hash }}"
+      - "{{ txadmin_deployer_prefill.db_password }}"
+      - "{{ txadmin_prometheus_basic_auth.password }}"
+      - "{{ fxserver_license_key }}"
+    # Connects from a source address of the probe namespace to the container's veth address and
+    # prints open (connected), filtered (no answer: the packet was dropped) or refused.
+    probe_py: |
+      import socket, sys
+      s = socket.socket()
+      s.settimeout(3)
+      s.bind((sys.argv[1], 0))
+      try:
+          s.connect(("198.51.100.1", int(sys.argv[2])))
+          print("open")
+      except TimeoutError:
+          print("filtered")
+      except OSError:
+          print("refused")
+  tasks:
+    - name: Read the environment file, its folder and the two drop-ins
+      ansible.builtin.stat:
+        path: "{{ item }}"
+        get_checksum: false
+      loop:
+        - "{{ env_file }}"
+        - "{{ env_file | dirname }}"
+        - "{{ dropin }}"
+        - "{{ nft_dropin }}"
+      register: txadmin_test_paths
+
+    - name: Check owners and modes (environment file root only, 0600)
+      vars:
+        st: >-
+          {{ dict(txadmin_test_paths.results | map(attribute='item')
+                  | zip(txadmin_test_paths.results | map(attribute='stat'))) }}
+      ansible.builtin.assert:
+        that:
+          - st[env_file].pw_name == 'root' and st[env_file].gr_name == 'root' and st[env_file].mode == '0600'
+          - st[env_file | dirname].pw_name == 'root' and st[env_file | dirname].mode == '0750'
+          - st[dropin].pw_name == 'root' and st[dropin].mode == '0644'
+          - st[nft_dropin].pw_name == 'root' and st[nft_dropin].mode == '0644'
+
+    - name: Read the environment file
+      ansible.builtin.slurp:
+        src: "{{ env_file }}"
+      register: txadmin_test_env
+      no_log: true
+
+    - name: Compare the TXHOST_* lines without showing them
+      vars:
+        lines: >-
+          {{ (txadmin_test_env.content | b64decode).splitlines() | reject('match', '^#')
+             | reject('equalto', '') | list }}
+      ansible.builtin.set_fact:
+        txadmin_test_env_checks:
+          exact: "{{ lines == expected_env }}"
+          names: "{{ lines | map('regex_replace', '=.*$', '') | list }}"
+          quoted: "{{ lines | select('search', quoted_value_re) | list | length }}"
+      no_log: true
+
+    - name: Check the TXHOST_* lines (exact, unquoted, no interface, no data path)
+      ansible.builtin.assert:
+        that:
+          - txadmin_test_env_checks.exact
+          - txadmin_test_env_checks.quoted | int == 0
+          - "'TXHOST_INTERFACE' not in txadmin_test_env_checks.names"
+          - "'TXHOST_DATA_PATH' not in txadmin_test_env_checks.names"
+        fail_msg: "Unexpected environment file; variables in it: {{ txadmin_test_env_checks.names | join(', ') }}"
+
+    - name: Read the unit drop-in
+      ansible.builtin.slurp:
+        src: "{{ dropin }}"
+      register: txadmin_test_dropin
+
+    - name: Check the drop-in (only the environment file)
+      ansible.builtin.assert:
+        that:
+          - >-
+            (txadmin_test_dropin.content | b64decode).splitlines() | reject('match', '^#') | list
+            == ['[Service]', 'EnvironmentFile=' ~ env_file]
+
+    - name: Read the unit settings systemd uses
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - show
+          - fxserver.service
+          - --property=ActiveState,EnvironmentFiles,Environment,ExecStart,DropInPaths
+      register: txadmin_test_unit
+      changed_when: false
+
+    - name: Check that the unit runs txAdmin with the environment file and the data path
+      ansible.builtin.assert:
+        that:
+          - "'ActiveState=active' in txadmin_test_unit.stdout_lines"
+          - "('EnvironmentFiles=' ~ env_file ~ ' (ignore_errors=no)') in txadmin_test_unit.stdout_lines"
+          - "('Environment=TXHOST_DATA_PATH=' ~ txdata) in txadmin_test_unit.stdout_lines"
+          - txadmin_test_unit.stdout is search('DropInPaths=.*' ~ dropin)
+          - txadmin_test_unit.stdout is search('argv[[][]]=/bin/bash /opt/fxserver/artifacts/current/run[.]sh ;')
+          - txadmin_test_unit.stdout is not search('[+]exec')
+
+    - name: Query the web port of the fake txAdmin
+      ansible.builtin.uri:
+        url: http://127.0.0.1:40120/
+        return_content: true
+      register: txadmin_test_web
+
+    - name: Query /host/status without the token
+      ansible.builtin.uri:
+        url: http://127.0.0.1:40120/host/status
+        return_content: true
+      register: txadmin_test_status_no_token
+
+    - name: Query /host/status with the token in the header
+      ansible.builtin.uri:
+        url: http://127.0.0.1:40120/host/status
+        headers:
+          x-txadmin-envtoken: "{{ txadmin_api_token }}"
+        return_content: true
+      register: txadmin_test_status
+      no_log: true
+
+    - name: Check txAdmin's answers (the token from the environment file reached the process)
+      ansible.builtin.assert:
+        that:
+          - txadmin_test_web.content is search('fake txAdmin 8.1.1')
+          - txadmin_test_status_no_token.json.error == 'token missing'
+          - txadmin_test_status.json.error is not defined
+          - txadmin_test_status.json.status == 'ONLINE'
+          - txadmin_test_status.json.playerSlots == 40
+          - txadmin_test_status.json.gameName == 'fivem'
+          - txadmin_test_status.json.dataPath == server_data
+          - txadmin_test_status.json.projectName == 'Molecule txAdmin'
+
+    - name: Query /info.json of the game server that txAdmin started
+      ansible.builtin.uri:
+        url: http://127.0.0.1:30120/info.json
+        return_content: true
+      register: txadmin_test_info
+
+    - name: Check that the fake game server still starts (build 35245, settings from server.cfg)
+      ansible.builtin.assert:
+        that:
+          - txadmin_test_info.json.server == 'FXServer-master SERVER v1.0.0.35245 linux'
+          - txadmin_test_info.json.vars.sv_maxClients == '40'
+
+    - name: Read admins.json, which txAdmin wrote from TXHOST_DEFAULT_ACCOUNT
+      ansible.builtin.slurp:
+        src: "{{ txdata }}/admins.json"
+      register: txadmin_test_admins
+      no_log: true
+
+    - name: Read the owner and mode of admins.json
+      ansible.builtin.stat:
+        path: "{{ txdata }}/admins.json"
+        get_checksum: false
+      register: txadmin_test_admins_stat
+
+    # The hash must arrive byte for byte: systemd passes the "$" signs of the unquoted value on.
+    - name: Compare the default account with the inventory without showing the hash
+      vars:
+        account: "{{ (txadmin_test_admins.content | b64decode | from_json)[0] }}"
+      ansible.builtin.set_fact:
+        txadmin_test_account:
+          name: "{{ account.name }}"
+          master: "{{ account.master }}"
+          hash_equal: "{{ account.password_hash == txadmin_default_account_password_hash }}"
+      no_log: true
+
+    - name: Check the default account (user name, exact hash, file of the service user)
+      ansible.builtin.assert:
+        that:
+          - txadmin_test_account.name == 'molecule_admin'
+          - txadmin_test_account.master | bool
+          - txadmin_test_account.hash_equal | bool
+          - txadmin_test_admins_stat.stat.pw_name == 'fxserver'
+          - txadmin_test_admins_stat.stat.mode == '0600'
+
+    - name: Read secrets.cfg
+      ansible.builtin.slurp:
+        src: "{{ server_data }}/secrets.cfg"
+      register: txadmin_test_secrets
+      no_log: true
+
+    - name: Look for the /perf/ convars of the toggle in secrets.cfg without showing them
+      vars:
+        lines: "{{ (txadmin_test_secrets.content | b64decode).splitlines() }}"
+      ansible.builtin.set_fact:
+        txadmin_test_perf_lines:
+          user: "{{ 'set sv_prometheusBasicAuthUser \"prometheus\"' in lines }}"
+          password: >-
+            {{ ('set sv_prometheusBasicAuthPassword "' ~ txadmin_prometheus_basic_auth.password ~ '"') in lines }}
+      no_log: true
+
+    - name: Check that the observability toggle wrote both convars into secrets.cfg
+      ansible.builtin.assert:
+        that:
+          - txadmin_test_perf_lines.user | bool
+          - txadmin_test_perf_lines.password | bool
+
+    - name: Query /perf/ without credentials
+      ansible.builtin.uri:
+        url: http://127.0.0.1:30120/perf/
+        status_code: 401
+
+    - name: Query /perf/ with the credentials of the toggle
+      ansible.builtin.uri:
+        url: http://127.0.0.1:30120/perf/
+        url_username: "{{ txadmin_prometheus_basic_auth.user }}"
+        url_password: "{{ txadmin_prometheus_basic_auth.password }}"
+        force_basic_auth: true
+        return_content: true
+      register: txadmin_test_perf
+      no_log: true
+
+    - name: Check the /perf/ answer
+      ansible.builtin.assert:
+        that:
+          - txadmin_test_perf.content is search('^tickTime_count[{]name="svMain"[}] [0-9]+$', multiline=true)
+
+    - name: Read the server log
+      ansible.builtin.command:
+        argv:
+          - journalctl
+          - --unit=fxserver.service
+          - --no-pager
+          - --output=cat
+      register: txadmin_test_journal
+      changed_when: false
+      no_log: true
+
+    - name: Look for the expected lines and for secrets in the log without showing it
+      ansible.builtin.set_fact:
+        txadmin_test_log:
+          settings: >-
+            {{ txadmin_test_journal.stdout is search('listening on 0[.]0[.]0[.]0:40120; data path ' ~ txdata
+               ~ '; API token set [(]value not shown[)]; quiet mode on') }}
+          account: "{{ txadmin_test_journal.stdout is search('created the master account molecule_admin') }}"
+          game: >-
+            {{ txadmin_test_journal.stdout
+               is search('game server started from server.cfg, listening on 0.0.0.0:30120') }}
+          secrets: "{{ secrets | select('in', txadmin_test_journal.stdout) | list | length }}"
+      no_log: true
+
+    - name: Check the log (settings applied, default account created, no secret in it)
+      ansible.builtin.assert:
+        that:
+          - txadmin_test_log.settings | bool
+          - txadmin_test_log.account | bool
+          - txadmin_test_log.game | bool
+          - txadmin_test_log.secrets | int == 0
+
+    - name: Read the nftables drop-in
+      ansible.builtin.slurp:
+        src: "{{ nft_dropin }}"
+      register: txadmin_test_nft
+
+    - name: Check the drop-in (loopback and the sources only, accept lines only)
+      ansible.builtin.assert:
+        that:
+          - >-
+            (txadmin_test_nft.content | b64decode).splitlines() | reject('match', '^#')
+            | reject('equalto', '') | list == expected_nft
+
+    - name: Check /etc/nftables.conf with both drop-ins (nft --check)
+      ansible.builtin.command:
+        argv:
+          - nft
+          - --check
+          - --file
+          - /etc/nftables.conf
+      changed_when: false
+
+    # The handlers restarted nftables.service, which loaded the ruleset into this container's own
+    # network namespace (never the Docker host's).
+    - name: Read the loaded input chain
+      ansible.builtin.command:
+        argv:
+          - nft
+          - list
+          - chain
+          - inet
+          - filter
+          - input
+      register: txadmin_test_chain
+      changed_when: false
+
+    - name: Check that both drop-ins are loaded
+      ansible.builtin.assert:
+        that:
+          - txadmin_test_chain.stdout is search('policy drop;')
+          - txadmin_test_chain.stdout is search('ip saddr 198.51.100.8/29 tcp dport 40120 accept')
+          - txadmin_test_chain.stdout is search('tcp dport 30120 accept')
+
+    - name: Connect to the web port and the game port from another network namespace
+      block:
+        - name: Create a namespace that plays a remote host (veth pair in 198.51.100.0/24)
+          ansible.builtin.shell: |
+            set -eu
+            ip netns del gs-probe 2>/dev/null || true
+            ip netns add gs-probe
+            ip link add gs-veth0 type veth peer name gs-veth1
+            ip link set gs-veth1 netns gs-probe
+            ip addr add 198.51.100.1/24 dev gs-veth0
+            ip link set gs-veth0 up
+            ip -n gs-probe addr add 198.51.100.10/24 dev gs-veth1
+            ip -n gs-probe addr add 198.51.100.200/24 dev gs-veth1
+            ip -n gs-probe link set gs-veth1 up
+            ip -n gs-probe link set lo up
+          args:
+            executable: /bin/bash
+          changed_when: true
+
+        - name: Connect from 198.51.100.10 (in the source list) and 198.51.100.200 (not in it)
+          ansible.builtin.command:
+            argv: [ip, netns, exec, gs-probe, python3, -I, -c, "{{ probe_py }}", "{{ item.0 }}", "{{ item.1 }}"]
+          loop:
+            - [198.51.100.10, 40120]
+            - [198.51.100.200, 40120]
+            - [198.51.100.200, 30120]
+          register: txadmin_test_probe
+          changed_when: false
+
+        - name: Check that the web port is open to the source list only and the game port to all
+          ansible.builtin.assert:
+            that:
+              - txadmin_test_probe.results | map(attribute='stdout') | list == ['open', 'filtered', 'open']
+
+      always:
+        - name: Remove the namespace (and with it the veth pair)
+          ansible.builtin.command:
+            argv: [ip, netns, del, gs-probe]
+          changed_when: true
+          failed_when: false
+
+    - name: Read the environment file before the refused runs
+      ansible.builtin.stat:
+        path: "{{ env_file }}"
+      register: txadmin_test_env_before
+
+    # Each run must stop at the role's checks, before any change (tasks/refused_run.yml).
+    - name: Refuse a loopback TXHOST_INTERFACE (the gotcha)
+      ansible.builtin.include_tasks: tasks/refused_run.yml
+      vars:
+        refused_message: forces every endpoint_add_* line of server.cfg onto that address
+        txadmin_interface: 127.0.0.1
+
+    - name: Refuse an open web port (a /0 source)
+      ansible.builtin.include_tasks: tasks/refused_run.yml
+      vars:
+        refused_message: is a /0 network (everyone)
+        txadmin_firewall_sources:
+          - 0.0.0.0/0
+
+    - name: Refuse an API token of "disabled" (status without a token)
+      ansible.builtin.include_tasks: tasks/refused_run.yml
+      vars:
+        refused_message: which makes /host/status answer without a token, is not supported
+        txadmin_api_token: disabled
+
+    - name: Refuse a toggle that did not reach secrets.cfg
+      ansible.builtin.include_tasks: tasks/refused_run.yml
+      vars:
+        refused_message: does not set sv_prometheusBasicAuthUser and sv_prometheusBasicAuthPassword
+        txadmin_prometheus_basic_auth:
+          enabled: true
+          user: prometheus
+          password: another-molecule-password-0123456789
+
+    - name: Refuse /perf/ credentials from two places (in the fxserver role, which writes secrets.cfg)
+      ansible.builtin.include_tasks: tasks/refused_run.yml
+      vars:
+        refused_role: fxserver
+        refused_message: The /perf/ credentials come from two places or are incomplete
+        fxserver_perf_password: another-molecule-password-0123456789
+
+    - name: Refuse a slot limit below sv_maxclients of server.cfg
+      ansible.builtin.include_tasks: tasks/refused_run.yml
+      vars:
+        refused_message: txAdmin would refuse to start the server
+        txadmin_max_slots: 32
+
+    - name: Read the environment file after the refused runs
+      ansible.builtin.stat:
+        path: "{{ env_file }}"
+      register: txadmin_test_env_after
+
+    - name: Check that the refused runs changed nothing
+      ansible.builtin.assert:
+        that:
+          - txadmin_test_env_after.stat.checksum == txadmin_test_env_before.stat.checksum
+          - txadmin_test_env_after.stat.mtime == txadmin_test_env_before.stat.mtime

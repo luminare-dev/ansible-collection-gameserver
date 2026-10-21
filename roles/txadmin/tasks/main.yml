@@ -1,0 +1,25 @@
+# luminare.gameserver.txadmin: configure txAdmin (shipped with the server build) as code through
+# its TXHOST_* environment variables, and keep its web port closed with an nftables drop-in.
+# Order: every check first (nothing changes when one fails), then the environment file and the
+# unit drop-in, the firewall drop-in, the restart and a check that txAdmin answers.
+# txAdmin's own files (admins.json, config.json in txData) are never written by this role.
+
+- name: Check the settings, the fxserver unit and the firewall layout
+  ansible.builtin.import_tasks: assert.yml
+
+- name: Install nftables when the role manages the firewall drop-in
+  ansible.builtin.apt:
+    name: "{{ __txadmin_packages }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+  when: __txadmin_packages | length > 0
+
+- name: Write the environment file and the unit drop-in
+  ansible.builtin.import_tasks: config.yml
+
+- name: Allow the web port in the nftables drop-in
+  ansible.builtin.import_tasks: firewall.yml
+
+- name: Restart txAdmin when its settings changed and check that it answers
+  ansible.builtin.import_tasks: check.yml

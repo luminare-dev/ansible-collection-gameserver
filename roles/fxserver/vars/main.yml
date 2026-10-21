@@ -18,9 +18,20 @@ __fxserver_cfg_defaults:
   extra_lines: []
 __fxserver_cfg: "{{ __fxserver_cfg_defaults | combine(fxserver_cfg) }}"
 
-# /perf/ basic auth (sv_prometheusBasicAuthUser/Password in secrets.cfg).
-__fxserver_perf_user: "{{ fxserver_perf_user }}"
-__fxserver_perf_password: "{{ fxserver_perf_password }}"
+# /perf/ basic auth (sv_prometheusBasicAuthUser/Password in secrets.cfg). This role writes
+# secrets.cfg, so it also reads the observability toggle of luminare.gameserver.txadmin
+# (txadmin_prometheus_basic_auth: enabled, user, password) when that variable is set where this
+# role sees it (inventory or play vars). When the toggle is on, its user and password are used;
+# otherwise fxserver_perf_user and fxserver_perf_password. assert.yml refuses both at once.
+__fxserver_txadmin_perf: >-
+  {{ {'enabled': false, 'user': 'prometheus', 'password': ''}
+     | combine(txadmin_prometheus_basic_auth | default({})
+               if (txadmin_prometheus_basic_auth | default({})) is mapping else {}) }}
+__fxserver_perf_from_txadmin: "{{ __fxserver_txadmin_perf.enabled | bool }}"
+__fxserver_perf_user: >-
+  {{ __fxserver_txadmin_perf.user if __fxserver_perf_from_txadmin | bool else fxserver_perf_user }}
+__fxserver_perf_password: >-
+  {{ __fxserver_txadmin_perf.password if __fxserver_perf_from_txadmin | bool else fxserver_perf_password }}
 # /perf/ is never left open: build 35245 answers it without credentials when both convars are
 # empty. Without a configured password, server_data.yml keeps the one that secrets.cfg already
 # has (this line, written by the template) or makes a random one of 32 letters and digits.
