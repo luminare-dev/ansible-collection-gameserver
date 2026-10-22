@@ -62,7 +62,7 @@ Install the collection from a release tag with `ansible-galaxy` (needs `git` on 
 
 <!-- x-release-please-start-version -->
 ```bash
-ansible-galaxy collection install git+https://github.com/luminare-dev/ansible-collection-gameserver.git,v0.1.0
+ansible-galaxy collection install git+https://github.com/luminare-dev/ansible-collection-gameserver.git,v0.2.0
 ansible-galaxy collection list luminare.gameserver
 ```
 <!-- x-release-please-end -->
