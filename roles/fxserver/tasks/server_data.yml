@@ -1,0 +1,115 @@
+# The deploy key is on disk only while git runs: the server runs as the same user, so code in a
+# resource could read a key that stayed there. Writing it on each run and removing it in "always"
+# are reported as unchanged, so that a run without a new commit stays at changed=0.
+- name: Check out server-data from git
+  when: fxserver_server_data_repo | length > 0
+  block:
+    - name: Create the folder for the deploy key
+      ansible.builtin.file:
+        path: "{{ __fxserver_deploy_key_path | dirname }}"
+        state: directory
+        owner: "{{ fxserver_user }}"
+        group: "{{ fxserver_user }}"
+        mode: "0700"
+      when: fxserver_server_data_deploy_key | length > 0
+
+    - name: Write the deploy key for this checkout (read-only key for the server-data repository)
+      ansible.builtin.copy:
+        content: "{{ fxserver_server_data_deploy_key | trim }}\n"
+        dest: "{{ __fxserver_deploy_key_path }}"
+        owner: "{{ fxserver_user }}"
+        group: "{{ fxserver_user }}"
+        mode: "0600"
+      changed_when: false
+      no_log: true
+      diff: false
+      when: fxserver_server_data_deploy_key | length > 0
+
+    - name: Clone or update server-data as the service user
+      ansible.builtin.git:
+        repo: "{{ fxserver_server_data_repo }}"
+        dest: "{{ fxserver_server_data_dir }}"
+        version: "{{ fxserver_server_data_version }}"
+        key_file: "{{ __fxserver_deploy_key_path if fxserver_server_data_deploy_key | length > 0 else omit }}"
+        accept_newhostkey: true
+        force: false
+      become: true
+      become_user: "{{ fxserver_user }}"
+      notify: Restart fxserver
+
+  always:
+    - name: Remove the deploy key again (also when the checkout failed)
+      ansible.builtin.file:
+        path: "{{ __fxserver_deploy_key_path }}"
+        state: absent
+      changed_when: false
+
+- name: Write server.cfg (when server-data does not come from git)
+  ansible.builtin.template:
+    src: server.cfg.j2
+    dest: "{{ fxserver_server_data_dir }}/server.cfg"
+    owner: "{{ fxserver_user }}"
+    group: "{{ fxserver_user }}"
+    mode: "0640"
+  when: fxserver_server_data_repo | length == 0
+  notify: Restart fxserver
+
+# Build 35245 answers /perf/ to anyone when sv_prometheusBasicAuthUser and ...Password are both
+# empty, so secrets.cfg always sets them. Without a configured password the role keeps the one
+# that secrets.cfg already has, so that a second run changes nothing, or makes a random one.
+- name: Look for an earlier secrets.cfg (without a configured /perf/ password)
+  ansible.builtin.stat:
+    path: "{{ fxserver_server_data_dir }}/secrets.cfg"
+    get_checksum: false
+  register: __fxserver_secrets_cfg_stat
+  when: __fxserver_perf_password | length == 0
+
+- name: Read the earlier secrets.cfg
+  ansible.builtin.slurp:
+    src: "{{ fxserver_server_data_dir }}/secrets.cfg"
+  register: __fxserver_secrets_cfg_old
+  no_log: true
+  when:
+    - __fxserver_perf_password | length == 0
+    - __fxserver_secrets_cfg_stat.stat.exists
+
+- name: Choose the /perf/ password (configured, kept from secrets.cfg, or new and random)
+  vars:
+    __fxserver_perf_kept: >-
+      {{ ((__fxserver_secrets_cfg_old.content | b64decode
+           | regex_findall(__fxserver_perf_password_line_re, multiline=true))
+          if __fxserver_secrets_cfg_old is not skipped else []) + [''] }}
+  ansible.builtin.set_fact:
+    __fxserver_perf_written_password: >-
+      {{ __fxserver_perf_password if __fxserver_perf_password | length > 0
+         else __fxserver_perf_kept | first if __fxserver_perf_kept | first | length > 0
+         else lookup('ansible.builtin.password', '/dev/null', length=32, chars=['ascii_letters', 'digits']) }}
+  no_log: true
+
+- name: Write secrets.cfg (license key and other secrets, mode 0600)
+  ansible.builtin.template:
+    src: secrets.cfg.j2
+    dest: "{{ fxserver_server_data_dir }}/secrets.cfg"
+    owner: "{{ fxserver_user }}"
+    group: "{{ fxserver_user }}"
+    mode: "0600"
+  no_log: true
+  diff: false
+  notify: Restart fxserver
+
+- name: Read server.cfg
+  ansible.builtin.slurp:
+    src: "{{ fxserver_server_data_dir }}/server.cfg"
+  register: __fxserver_server_cfg
+  no_log: true
+
+- name: Check that server.cfg runs secrets.cfg
+  ansible.builtin.assert:
+    that:
+      - >-
+        __fxserver_server_cfg.content | b64decode
+        is search('^[ \t]*exec[ \t]+"?secrets[.]cfg"?[ \t\r]*$', multiline=true)
+    fail_msg: >-
+      {{ fxserver_server_data_dir }}/server.cfg has no line "exec secrets.cfg". The license key and
+      the other secrets are only in secrets.cfg; add that line to server.cfg (at the end).
+    quiet: true

@@ -1,4 +1,4 @@
-"""Tests for scripts/molecule_scenarios.py (the role x platform list behind the Molecule CI matrix)."""
+"""Tests for scripts/molecule_scenarios.py (the role x scenario x platform list behind the Molecule CI matrix)."""
 
 from __future__ import annotations
 
@@ -20,11 +20,13 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import molecule_scenarios as ms  # noqa: E402
 
 
-def repo(*roles_with_scenario: str, roles_without: tuple[str, ...] = ()) -> Path:
+def repo(*roles_with_scenario: str, roles_without: tuple[str, ...] = (),
+         extra: tuple[tuple[str, str], ...] = ()) -> Path:
+    """A repository with a default scenario for each role, plus (role, scenario) pairs in extra."""
     tmp = Path(tempfile.mkdtemp(prefix="mol-test-"))
     unittest.addModuleCleanup(shutil.rmtree, tmp, ignore_errors=True)
-    for name in roles_with_scenario:
-        scenario = tmp / "roles" / name / "molecule" / "default"
+    for role, name in [(r, "default") for r in roles_with_scenario] + list(extra):
+        scenario = tmp / "roles" / role / "molecule" / name
         scenario.mkdir(parents=True)
         (scenario / "molecule.yml").write_text("platforms: []\n", encoding="utf-8")
     for name in roles_without:
@@ -39,8 +41,8 @@ def run(root: Path, *extra: str) -> tuple[int, str, str]:
     return code, out.getvalue(), err.getvalue()
 
 
-def entry(role: str, platform: str, instance: str) -> dict[str, str]:
-    return {"role": role, "platform": platform, "instance": instance}
+def entry(role: str, platform: str, instance: str, scenario: str = "default") -> dict[str, str]:
+    return {"role": role, "scenario": scenario, "platform": platform, "instance": instance}
 
 
 class ScenarioListTest(unittest.TestCase):
@@ -90,6 +92,40 @@ class ScenarioListTest(unittest.TestCase):
         )
         self.assertEqual({e["role"] for e in json.loads(out)}, {"gameserver_observability"})
 
+    def test_further_scenarios_follow_default_in_name_order(self):
+        root = repo("fxserver", extra=(("fxserver", "upgrade"), ("fxserver", "fresh_os")))
+        (root / "roles" / "fxserver" / "molecule" / "resources").mkdir()  # no molecule.yml: not a scenario
+        code, out, _ = run(root)
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            json.loads(out),
+            [
+                entry("fxserver", "debian13", "gs-fxserver-debian13"),
+                entry("fxserver", "ubuntu2404", "gs-fxserver-ubuntu2404"),
+                entry("fxserver", "debian13", "gs-fxserver-fresh-os-debian13", "fresh_os"),
+                entry("fxserver", "ubuntu2404", "gs-fxserver-fresh-os-ubuntu2404", "fresh_os"),
+                entry("fxserver", "debian13", "gs-fxserver-upgrade-debian13", "upgrade"),
+                entry("fxserver", "ubuntu2404", "gs-fxserver-upgrade-ubuntu2404", "upgrade"),
+            ],
+        )
+
+    def test_role_with_only_a_further_scenario_fails(self):
+        """The default scenario stays mandatory; "upgrade" alone does not count."""
+        code, out, err = run(repo(extra=(("fxserver", "upgrade"),)))
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn("roles/fxserver: no Molecule scenario", err)
+
+    def test_invalid_scenario_name_fails(self):
+        code, out, err = run(repo("fxserver", extra=(("fxserver", "Up-Grade"),)))
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn("roles/fxserver/molecule/Up-Grade: not a valid scenario name", err)
+
+    def test_duplicate_instance_names_fail(self):
+        """Role "a" with scenario "b" and role "a_b" would share gs-a-b-<platform>."""
+        code, out, err = run(repo("a", "a_b", extra=(("a", "b"),)))
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn("instance name gs-a-b-debian13 is used by more than one role or scenario", err)
+
     def test_invalid_directory_name_fails(self):
         code, out, err = run(repo("fxserver", "Bad-Name"))
         self.assertEqual(code, 1)
@@ -104,8 +140,8 @@ class ScenarioListTest(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(
             target.read_text(encoding="utf-8"),
-            'matrix=[{"role":"fxserver","platform":"debian13","instance":"gs-fxserver-debian13"},'
-            '{"role":"fxserver","platform":"ubuntu2404","instance":"gs-fxserver-ubuntu2404"}]\n',
+            'matrix=[{"role":"fxserver","scenario":"default","platform":"debian13","instance":"gs-fxserver-debian13"},'
+            '{"role":"fxserver","scenario":"default","platform":"ubuntu2404","instance":"gs-fxserver-ubuntu2404"}]\n',
         )
 
     def test_github_output_needs_the_variable(self):
@@ -119,7 +155,9 @@ class ScenarioListTest(unittest.TestCase):
         """Every directory under roles/ in this checkout is a validly named role with a scenario."""
         roles, errors = ms.scenario_roles(ROOT)
         self.assertEqual(errors, [])
-        self.assertEqual(roles, sorted(roles))
+        self.assertEqual(list(roles), sorted(roles))
+        self.assertEqual(ms.duplicate_instances(ms.matrix(roles)), [])
+        self.assertEqual(roles.get("fxserver"), ["default", "upgrade"])
 
     def test_every_platform_has_an_image_in_the_shared_dockerfile(self):
         """The matrix platforms are exactly the images that Dockerfile.j2 can build."""

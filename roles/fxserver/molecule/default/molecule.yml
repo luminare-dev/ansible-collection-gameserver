@@ -1,0 +1,52 @@
+# Scenario "default": a first install of the fake build 35245 (tests/fake-artifact/) with a
+# templated server.cfg, the nftables drop-in, textfile metrics and the backup timer. The unit
+# really starts; verify.yml queries the fake server's endpoints and restores a backup as the
+# runbook describes it. Shared settings (driver, sequence with idempotence, roles path) come from
+# .config/molecule/config.yml.
+platforms:
+  - name: gs-fxserver-debian13
+    image: gs-debian13
+    dockerfile: ../../../../molecule/resources/Dockerfile.j2
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    tmpfs:
+      - /run
+      - /run/lock
+    command: /lib/systemd/systemd
+  - name: gs-fxserver-ubuntu2404
+    image: gs-ubuntu2404
+    dockerfile: ../../../../molecule/resources/Dockerfile.j2
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    tmpfs:
+      - /run
+      - /run/lock
+    command: /lib/systemd/systemd
+
+provisioner:
+  name: ansible
+  inventory:
+    group_vars:
+      all:
+        # Test values only: the fake server accepts any key, and none of these is a real secret.
+        fxserver_license_key: molecule-dummy-key
+        fxserver_perf_user: prometheus
+        fxserver_perf_password: molecule-perf-password-0123456789
+        # The drop-in is validated with nft --check, but a ruleset is not loaded in a container.
+        fxserver_firewall_reload: false
+        fxserver_firewall_sources:
+          - 198.51.100.0/24
+          - 2001:db8::/32
+        fxserver_textfile_dir: /var/lib/node_exporter/textfile_collector
+        fxserver_backup_timer_enabled: true
+        fxserver_cfg:
+          hostname: Molecule test server
+          project_name: Molecule test
+          max_clients: 48
+          lan: true
+          resources:
+            - fake-resource

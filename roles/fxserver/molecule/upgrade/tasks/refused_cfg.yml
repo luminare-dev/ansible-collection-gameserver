@@ -1,0 +1,21 @@
+# One run of the role with the templated server.cfg and the fxserver_cfg of fxserver_test_cfg,
+# which the role must refuse at its checks.
+- name: Run the role with fxserver_cfg {{ fxserver_test_cfg | to_json }}
+  block:
+    - name: Apply the role without the server-data repository
+      ansible.builtin.include_role:
+        name: fxserver
+      vars:
+        fxserver_build: 35245
+        fxserver_server_data_repo: ""
+        fxserver_cfg: "{{ fxserver_test_cfg }}"
+
+    - name: Fail, the role must not write these values into server.cfg
+      ansible.builtin.fail:
+        msg: The role accepted fxserver_cfg {{ fxserver_test_cfg | to_json }}.
+  rescue:
+    - name: Check that the role stopped at the server.cfg checks
+      ansible.builtin.assert:
+        that:
+          - ansible_failed_task.name is search('Check the server.cfg settings')
+          - ansible_failed_result.msg is search('without quotes or line breaks')

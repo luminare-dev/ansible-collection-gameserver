@@ -1,0 +1,24 @@
+# {{ ansible_managed }}
+# luminare.gameserver.fxserver: game port {{ fxserver_game_port }} (tcp and udp).
+# Included by /etc/nftables.conf after table inet filter (input policy drop): accept rules only.
+{% set v4 = fxserver_firewall_sources | reject('search', ':') | list %}
+{% set v6 = fxserver_firewall_sources | select('search', ':') | list %}
+{% for proto in ['tcp', 'udp'] %}
+{% if '0.0.0.0/0' in v4 and '::/0' in v6 %}
+add rule inet filter input {{ proto }} dport {{ fxserver_game_port }} accept
+{% else %}
+{% if '0.0.0.0/0' in v4 %}
+add rule inet filter input meta nfproto ipv4 {{ proto }} dport {{ fxserver_game_port }} accept
+{% elif v4 | length > 0 %}
+add rule inet filter input ip saddr { {{ v4 | join(', ') }} } {{ proto }} dport {{ fxserver_game_port }} accept
+{% endif %}
+{% if '::/0' in v6 %}
+add rule inet filter input meta nfproto ipv6 {{ proto }} dport {{ fxserver_game_port }} accept
+{% elif v6 | length > 0 %}
+add rule inet filter input ip6 saddr { {{ v6 | join(', ') }} } {{ proto }} dport {{ fxserver_game_port }} accept
+{% endif %}
+{% endif %}
+{% endfor %}
+{% if fxserver_firewall_sources | length == 0 %}
+# fxserver_firewall_sources is empty: no rule, the port is reachable from this host only.
+{% endif %}

@@ -5,7 +5,8 @@
 # A scenario declares two platforms built from molecule/resources/Dockerfile.j2:
 #   platforms:
 #     - name: gs-<role>-debian13        # "gs-" prefix keeps names unique on a shared Docker daemon;
-#                                       # write "_" in a role name as "-" (it is also the host name)
+#                                       # write "_" in a role name as "-" (it is also the host name);
+#                                       # scenarios other than default: gs-<role>-<scenario>-debian13
 #       image: gs-debian13              # or gs-ubuntu2404; selects the digest-pinned base image
 #       dockerfile: ../../../../molecule/resources/Dockerfile.j2
 #       privileged: true
@@ -14,7 +15,7 @@
 #       tmpfs: ["/run", "/run/lock"]
 #       command: /lib/systemd/systemd
 #
-# Run one scenario:  cd roles/<role> && molecule test
+# Run one scenario:  cd roles/<role> && molecule test [--scenario-name <scenario>]
 # One platform only, as each CI job does:  molecule test --platform-name gs-<role>-debian13
 
 # Roles are used from this checkout (ansible.cfg roles_path below), not installed as stand-alone

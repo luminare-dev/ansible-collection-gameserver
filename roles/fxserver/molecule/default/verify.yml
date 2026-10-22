@@ -1,0 +1,403 @@
+- name: Verify
+  hosts: all
+  gather_facts: false
+  vars:
+    base: /opt/fxserver
+    artifacts: /opt/fxserver/artifacts
+    server_data: /opt/fxserver/server-data
+    backups: /var/backups/fxserver
+    textfile: /var/lib/node_exporter/textfile_collector
+    expected_nft: |
+      add rule inet filter input ip saddr { 198.51.100.0/24 } tcp dport 30120 accept
+      add rule inet filter input ip6 saddr { 2001:db8::/32 } tcp dport 30120 accept
+      add rule inet filter input ip saddr { 198.51.100.0/24 } udp dport 30120 accept
+      add rule inet filter input ip6 saddr { 2001:db8::/32 } udp dport 30120 accept
+  tasks:
+    - name: Read the service user
+      ansible.builtin.getent:
+        database: passwd
+        key: fxserver
+
+    - name: Check the service user (system account, no login shell, home in the base directory)
+      ansible.builtin.assert:
+        that:
+          - ansible_facts.getent_passwd.fxserver[1] | int < 1000
+          - ansible_facts.getent_passwd.fxserver[4] == base
+          - ansible_facts.getent_passwd.fxserver[5] == '/usr/sbin/nologin'
+
+    - name: Read the files and directories the role manages
+      ansible.builtin.stat:
+        path: "{{ item }}"
+        follow: false
+        get_checksum: false
+      loop:
+        - "{{ base }}"
+        - "{{ artifacts }}/35245/run.sh"
+        - "{{ artifacts }}/current"
+        - "{{ artifacts }}/previous"
+        - "{{ artifacts }}/.35245.tar.xz"
+        - "{{ artifacts }}/.35245.partial"
+        - "{{ server_data }}/server.cfg"
+        - "{{ server_data }}/secrets.cfg"
+        - /opt/fxserver/txData
+        - "{{ backups }}"
+        - /usr/local/sbin/fxserver-backup
+      register: fxserver_test_paths
+
+    - name: Check the layout, owners and modes
+      vars:
+        st: >-
+          {{ dict(fxserver_test_paths.results | map(attribute='item')
+                  | zip(fxserver_test_paths.results | map(attribute='stat'))) }}
+      ansible.builtin.assert:
+        that:
+          - st[base].pw_name == 'fxserver' and st[base].mode == '0750'
+          - st[artifacts ~ '/35245/run.sh'].exists
+          - st[artifacts ~ '/current'].islnk
+          - st[artifacts ~ '/current'].lnk_target == artifacts ~ '/35245'
+          - not st[artifacts ~ '/previous'].exists
+          - not st[artifacts ~ '/.35245.tar.xz'].exists
+          - not st[artifacts ~ '/.35245.partial'].exists
+          - st[server_data ~ '/server.cfg'].pw_name == 'fxserver'
+          - st[server_data ~ '/server.cfg'].mode == '0640'
+          - st[server_data ~ '/secrets.cfg'].pw_name == 'fxserver'
+          - st[server_data ~ '/secrets.cfg'].mode == '0600'
+          - st['/opt/fxserver/txData'].isdir and st['/opt/fxserver/txData'].pw_name == 'fxserver'
+          - st[backups].pw_name == 'root' and st[backups].mode == '0700'
+          - st['/usr/local/sbin/fxserver-backup'].mode == '0750'
+
+    - name: Read server.cfg
+      ansible.builtin.slurp:
+        src: "{{ server_data }}/server.cfg"
+      register: fxserver_test_server_cfg
+
+    - name: Check server.cfg (settings from fxserver_cfg and the defaults, secrets.cfg run last)
+      vars:
+        text: "{{ fxserver_test_server_cfg.content | b64decode }}"
+      ansible.builtin.assert:
+        that:
+          - text is search('^endpoint_add_tcp "0.0.0.0:30120"$', multiline=true)
+          - text is search('^sv_hostname "Molecule test server"$', multiline=true)
+          - text is search('^sv_maxclients 48$', multiline=true)
+          - text is search('^sv_master1 ""$', multiline=true)
+          - text is search('^sv_lan true$', multiline=true)
+          - text is search('^sets sv_appearAllowlisted true$', multiline=true)
+          - text is search('^set sv_requestParanoia 1$', multiline=true)
+          - text is not search('^sv_endpointPrivacy', multiline=true)
+          - text is search('^ensure fake-resource$', multiline=true)
+          - (text | trim).endswith('exec secrets.cfg')
+          - "'licenseKey' not in text"
+
+    - name: Read the unit settings systemd uses
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - show
+          - fxserver.service
+          - --property=ActiveState,UnitFileState,User,NoNewPrivileges,ProtectSystem,ReadWritePaths,WorkingDirectory
+      register: fxserver_test_unit_show
+      changed_when: false
+
+    - name: Check that the unit runs, is enabled and is hardened
+      ansible.builtin.assert:
+        that:
+          - "'ActiveState=active' in fxserver_test_unit_show.stdout_lines"
+          - "'UnitFileState=enabled' in fxserver_test_unit_show.stdout_lines"
+          - "'User=fxserver' in fxserver_test_unit_show.stdout_lines"
+          - "'NoNewPrivileges=yes' in fxserver_test_unit_show.stdout_lines"
+          - "'ProtectSystem=strict' in fxserver_test_unit_show.stdout_lines"
+          - "('ReadWritePaths=' ~ base) in fxserver_test_unit_show.stdout_lines"
+          - "('WorkingDirectory=' ~ server_data) in fxserver_test_unit_show.stdout_lines"
+
+    - name: Query /info.json, /dynamic.json and /players.json of the fake server
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:30120/{{ item }}"
+        return_content: true
+      loop:
+        - info.json
+        - dynamic.json
+        - players.json
+      register: fxserver_test_endpoints
+
+    - name: Check the answers (build 35245, settings from server.cfg, synthetic players)
+      vars:
+        info: "{{ fxserver_test_endpoints.results[0].json }}"
+        dynamic: "{{ fxserver_test_endpoints.results[1].json }}"
+        players: "{{ fxserver_test_endpoints.results[2].json }}"
+      ansible.builtin.assert:
+        that:
+          - info.server == 'FXServer-master SERVER v1.0.0.35245 linux'
+          - info.vars.sv_maxClients == '48'
+          - info.vars.sv_projectName == 'Molecule test'
+          - info.resources == ['fake-resource']
+          - dynamic.clients == 3
+          - dynamic.hostname == 'Molecule test server'
+          - players | map(attribute='name') | list == ['player-1', 'player-2', 'player-3']
+
+    - name: Query /perf/ without credentials
+      ansible.builtin.uri:
+        url: http://127.0.0.1:30120/perf/
+        status_code: 401
+
+    - name: Query /perf/ with the wrong password
+      ansible.builtin.uri:
+        url: http://127.0.0.1:30120/perf/
+        url_username: prometheus
+        url_password: wrong-password-for-the-test
+        force_basic_auth: true
+        status_code: 401
+
+    - name: Query /perf/ with the credentials from secrets.cfg
+      ansible.builtin.uri:
+        url: http://127.0.0.1:30120/perf/
+        url_username: "{{ fxserver_perf_user }}"
+        url_password: "{{ fxserver_perf_password }}"
+        force_basic_auth: true
+        return_content: true
+      register: fxserver_test_perf
+
+    - name: Check the /perf/ answer
+      ansible.builtin.assert:
+        that:
+          - fxserver_test_perf.content is search('^tickTime_count[{]name="svMain"[}] [0-9]+$', multiline=true)
+
+    - name: Read the textfile metrics and the time of the current link
+      ansible.builtin.slurp:
+        src: "{{ textfile }}/fxserver_artifact.prom"
+      register: fxserver_test_prom
+
+    - name: Read the current link
+      ansible.builtin.stat:
+        path: "{{ artifacts }}/current"
+        follow: false
+      register: fxserver_test_current_link
+
+    - name: Check the textfile metrics
+      vars:
+        text: "{{ fxserver_test_prom.content | b64decode }}"
+      ansible.builtin.assert:
+        that:
+          - text is search('^# TYPE fxserver_artifact_build gauge$', multiline=true)
+          - text is search('^fxserver_artifact_build 35245$', multiline=true)
+          - >-
+            text is search('^fxserver_artifact_installed_timestamp_seconds '
+            ~ (fxserver_test_current_link.stat.mtime | int) ~ '$', multiline=true)
+
+    - name: Read the nftables drop-in
+      ansible.builtin.slurp:
+        src: /etc/nftables.d/45-fxserver.nft
+      register: fxserver_test_nft
+
+    - name: Check the drop-in (only "add rule inet filter input ... accept" lines)
+      vars:
+        rules: >-
+          {{ (fxserver_test_nft.content | b64decode).splitlines() | reject('match', '^#')
+             | reject('equalto', '') | list }}
+      ansible.builtin.assert:
+        that:
+          - rules == expected_nft.splitlines()
+
+    - name: Check /etc/nftables.conf with the drop-in (nft --check, nothing is loaded)
+      ansible.builtin.command:
+        argv:
+          - nft
+          - --check
+          - --file
+          - /etc/nftables.conf
+      changed_when: false
+
+    - name: Read the journald drop-in
+      ansible.builtin.slurp:
+        src: /etc/systemd/journald.conf.d/60-fxserver.conf
+      register: fxserver_test_journald
+
+    - name: Check the journald retention
+      ansible.builtin.assert:
+        that:
+          - (fxserver_test_journald.content | b64decode) is search('^MaxRetentionSec=14day$', multiline=true)
+
+    - name: Read the server log
+      ansible.builtin.command:
+        argv:
+          - journalctl
+          - --unit=fxserver.service
+          - --no-pager
+          - --output=cat
+      register: fxserver_test_journal
+      changed_when: false
+
+    - name: Check that the server started with the key and never logged it
+      ansible.builtin.assert:
+        that:
+          - fxserver_test_journal.stdout is search('listening on 0.0.0.0:30120; sv_licenseKey is set')
+          - fxserver_license_key not in fxserver_test_journal.stdout
+          - fxserver_perf_password not in fxserver_test_journal.stdout
+
+    - name: Check that the backup timer is enabled and active
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - is-active
+          - fxserver-backup.timer
+      changed_when: false
+
+    - name: Create a cache folder like the server's own
+      ansible.builtin.file:
+        path: "{{ server_data }}/cache/files"
+        state: directory
+        owner: fxserver
+        group: fxserver
+        mode: "0750"
+
+    - name: Put a file into the cache folder (backups leave it out)
+      ansible.builtin.copy:
+        dest: "{{ server_data }}/cache/files/cached.bin"
+        content: cache
+        owner: fxserver
+        group: fxserver
+        mode: "0640"
+
+    - name: Run the backup service four times (one more than fxserver_backup_keep)
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - start
+          - fxserver-backup.service
+      changed_when: false
+      loop: [1, 2, 3, 4]
+
+    - name: List the backup archives
+      ansible.builtin.find:
+        paths: "{{ backups }}"
+        patterns: "*.tar.zst"
+      register: fxserver_test_archives
+
+    - name: Check retention, names and modes of the archives
+      ansible.builtin.assert:
+        that:
+          - fxserver_test_archives.matched == 3
+          - >-
+            fxserver_test_archives.files | map(attribute='path') | map('basename')
+            | select('match', '^fxserver-[0-9]{8}T[0-9]{6}Z-scheduled[.]tar[.]zst$') | list | length == 3
+          - fxserver_test_archives.files | map(attribute='mode') | unique | list == ['0600']
+
+    - name: List the newest archive
+      ansible.builtin.command:
+        argv:
+          - tar
+          - --zstd
+          - --list
+          - --file
+          - "{{ fxserver_test_archives.files | map(attribute='path') | sort | last }}"
+      register: fxserver_test_listing
+      changed_when: false
+
+    - name: Check what the archive holds (server-data with secrets.cfg and txData, no cache)
+      ansible.builtin.assert:
+        that:
+          - "'opt/fxserver/server-data/server.cfg' in fxserver_test_listing.stdout_lines"
+          - "'opt/fxserver/server-data/secrets.cfg' in fxserver_test_listing.stdout_lines"
+          - "'opt/fxserver/txData/' in fxserver_test_listing.stdout_lines"
+          - fxserver_test_listing.stdout is not search('cache')
+
+    - name: Read the backup metric
+      ansible.builtin.slurp:
+        src: "{{ textfile }}/fxserver_backup.prom"
+      register: fxserver_test_backup_prom
+
+    - name: Check the backup metric
+      ansible.builtin.assert:
+        that:
+          - >-
+            (fxserver_test_backup_prom.content | b64decode)
+            is search('^fxserver_backup_last_success_timestamp_seconds [0-9]{10}$', multiline=true)
+
+    # The restore of docs/runbook.md ("Restore a backup of server-data and txData") with the newest
+    # archive: stop, move server-data and txData aside, extract, start, query /info.json.
+    - name: Read secrets.cfg before the restore (its checksum only)
+      ansible.builtin.stat:
+        path: "{{ server_data }}/secrets.cfg"
+        checksum_algorithm: sha256
+      register: fxserver_test_secrets_before
+
+    - name: Stop the server for the restore
+      ansible.builtin.systemd_service:
+        name: fxserver.service
+        state: stopped
+
+    - name: Move server-data and txData aside
+      ansible.builtin.command:
+        argv:
+          - mv
+          - --no-target-directory
+          - "{{ item }}"
+          - "{{ item }}.broken"
+      loop:
+        - "{{ server_data }}"
+        - /opt/fxserver/txData
+      changed_when: true
+
+    - name: Extract the newest archive
+      ansible.builtin.command:
+        argv:
+          - tar
+          - --zstd
+          - --extract
+          - --preserve-permissions
+          - --file
+          - "{{ fxserver_test_archives.files | map(attribute='path') | sort | last }}"
+          - --directory
+          - /
+      changed_when: true
+
+    - name: Read the restored files
+      ansible.builtin.stat:
+        path: "{{ item }}"
+        follow: false
+        checksum_algorithm: sha256
+      loop:
+        - "{{ server_data }}"
+        - "{{ server_data }}/server.cfg"
+        - "{{ server_data }}/secrets.cfg"
+        - /opt/fxserver/txData
+        - "{{ server_data }}/cache"
+      register: fxserver_test_restored
+
+    - name: Check owners, modes and secrets.cfg of the restored files (no cache folder)
+      vars:
+        st: "{{ fxserver_test_restored.results | map(attribute='stat') | list }}"
+      ansible.builtin.assert:
+        that:
+          - st[0].isdir and st[0].pw_name == 'fxserver' and st[0].gr_name == 'fxserver' and st[0].mode == '0750'
+          - st[1].pw_name == 'fxserver' and st[1].mode == '0640'
+          - st[2].pw_name == 'fxserver' and st[2].mode == '0600'
+          - st[2].checksum == fxserver_test_secrets_before.stat.checksum
+          - st[3].isdir and st[3].pw_name == 'fxserver' and st[3].mode == '0750'
+          - not st[4].exists
+
+    - name: Start the server on the restored files
+      ansible.builtin.systemd_service:
+        name: fxserver.service
+        state: started
+
+    - name: Wait until /info.json answers again
+      ansible.builtin.uri:
+        url: http://127.0.0.1:30120/info.json
+        return_content: true
+      register: fxserver_test_restored_info
+      until: fxserver_test_restored_info.status | default(0) == 200
+      retries: 30
+      delay: 2
+
+    - name: Check that the restored server runs with the restored server.cfg
+      ansible.builtin.assert:
+        that:
+          - fxserver_test_restored_info.json.vars.sv_projectName == 'Molecule test'
+
+    - name: Remove the folders that were moved aside
+      ansible.builtin.file:
+        path: "{{ item }}.broken"
+        state: absent
+      loop:
+        - "{{ server_data }}"
+        - /opt/fxserver/txData

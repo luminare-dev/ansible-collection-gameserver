@@ -1,0 +1,6 @@
+# HELP fxserver_artifact_build Build number of the active game server build.
+# TYPE fxserver_artifact_build gauge
+fxserver_artifact_build {{ __fxserver_build }}
+# HELP fxserver_artifact_installed_timestamp_seconds Unix time when the active build was switched on.
+# TYPE fxserver_artifact_installed_timestamp_seconds gauge
+fxserver_artifact_installed_timestamp_seconds {{ __fxserver_current_link.stat.mtime | int }}

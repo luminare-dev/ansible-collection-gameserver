@@ -1,6 +1,6 @@
 # 0006. Molecule in systemd containers, one CI job per role and platform
 
-- **Status:** accepted
+- **Status:** accepted; the CI matrix is extended to every scenario by [0014](0014-fake-build-and-one-ci-job-per-scenario.md)
 - **Date:** 2026-10-21
 
 ## Context

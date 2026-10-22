@@ -1,0 +1,20 @@
+# Point <artifacts>/current at build __fxserver_link_build atomically: create the new link under a
+# temporary name, then rename it over the old one (rename(2) replaces it in one step).
+
+- name: Create the new link under a temporary name
+  ansible.builtin.file:
+    src: "{{ fxserver_artifacts_dir }}/{{ __fxserver_link_build }}"
+    dest: "{{ fxserver_artifacts_dir }}/current.new"
+    state: link
+    force: true
+
+- name: Rename it over "current", now build {{ __fxserver_link_build }}
+  ansible.builtin.command:
+    argv:
+      - mv
+      - --no-target-directory
+      - --force
+      - "{{ fxserver_artifacts_dir }}/current.new"
+      - "{{ fxserver_artifacts_dir }}/current"
+  changed_when: true
+  notify: Restart fxserver

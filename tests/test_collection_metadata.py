@@ -65,7 +65,8 @@ class GalaxyMetadataTest(unittest.TestCase):
     def test_build_ignore_keeps_development_and_brand_files_out(self):
         ignored = set(self.galaxy["build_ignore"])
         required = {"docs/brand", "scripts", ".github", "dist", "tests/test_*.py", "*.tar.gz",
-                    ".forbidden-words-allow", "requirements-*.txt", ".venv", "molecule", "roles/*/molecule"}
+                    ".forbidden-words-allow", "requirements-*.txt", ".venv", "molecule", "roles/*/molecule",
+                    "tests/fake-artifact"}
         self.assertEqual(required - ignored, set())
 
     def test_requires_ansible(self):
@@ -114,16 +115,21 @@ class MoleculeSetupTest(unittest.TestCase):
             self.assertRegex(line, r"^FROM (debian:trixie|ubuntu:24\.04)@sha256:[0-9a-f]{64}$")
 
     def test_scenarios_use_the_shared_image_and_prefixed_names(self):
-        for scenario in sorted(ROOT.glob("roles/*/molecule/*/molecule.yml")):
-            role = scenario.parts[-4]
+        scenarios = sorted(ROOT.glob("roles/*/molecule/*/molecule.yml"))
+        self.assertTrue(scenarios, "no Molecule scenario found")
+        for scenario in scenarios:
+            role, name = scenario.parts[-4], scenario.parts[-2]
+            prefix = "gs-" + "-".join(x.replace("_", "-") for x in ([role] if name == "default" else [role, name]))
             with self.subTest(scenario=str(scenario.relative_to(ROOT))):
                 platforms = yaml.safe_load(scenario.read_text(encoding="utf-8"))["platforms"]
                 self.assertEqual(sorted(p["image"] for p in platforms), ["gs-debian13", "gs-ubuntu2404"])
                 for p in platforms:
-                    # CI runs "molecule test --platform-name gs-<role>-<platform>" (ci.yml), so the
-                    # name must match the image exactly: gs-debian13 -> gs-<role>-debian13.
+                    # CI runs "molecule test --scenario-name <name> --platform-name <instance>"
+                    # (ci.yml, scripts/molecule_scenarios.py), so the instance name must match the
+                    # image: gs-debian13 -> gs-<role>-debian13 (default) or
+                    # gs-<role>-<scenario>-debian13 (any other scenario).
                     platform = p["image"].removeprefix("gs-")
-                    self.assertEqual(p["name"], f"gs-{role.replace('_', '-')}-{platform}")
+                    self.assertEqual(p["name"], f"{prefix}-{platform}")
                     self.assertEqual(p.get("dockerfile"), SHARED_DOCKERFILE)
                     self.assertIs(p.get("privileged"), True)
                     self.assertEqual(p.get("cgroupns_mode"), "host")

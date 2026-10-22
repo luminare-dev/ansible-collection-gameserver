@@ -1,0 +1,145 @@
+- name: Verify
+  hosts: all
+  gather_facts: false
+  tasks:
+    # A variable, not the become keyword: ansible_become from the inventory overrides keywords.
+    - name: Read the user Ansible connects as (without become)
+      ansible.builtin.command:
+        argv:
+          - id
+          - --user
+          - --name
+      vars:
+        ansible_become: false
+      register: fxserver_test_connect_user
+      changed_when: false
+
+    - name: Check that this scenario connects as the non-root user admin (molecule.yml)
+      ansible.builtin.assert:
+        that:
+          - fxserver_test_connect_user.stdout == 'admin'
+
+    - name: Check the final builds, links and backups
+      ansible.builtin.include_tasks: tasks/check_build.yml
+      vars:
+        fxserver_test_current: "35245"
+        fxserver_test_previous: "35246"
+        fxserver_test_builds: ["35245", "35246"]
+        fxserver_test_backups:
+          - pre-update-35245-to-35246
+          - pre-update-35246-to-35247
+          - pre-update-35246-to-35245
+
+    - name: Read the service state
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - show
+          - fxserver.service
+          - --property=ActiveState,NRestarts
+      register: fxserver_test_unit
+      changed_when: false
+
+    - name: Check that the server runs
+      ansible.builtin.assert:
+        that:
+          - "'ActiveState=active' in fxserver_test_unit.stdout_lines"
+
+    - name: Read the git checkout and the files that must not be in it
+      ansible.builtin.stat:
+        path: "{{ item }}"
+        get_checksum: false
+      loop:
+        - /opt/fxserver/server-data/.git
+        - /opt/fxserver/server-data/secrets.cfg
+        - /etc/nftables.d/45-fxserver.nft
+        - /etc/systemd/journald.conf.d/60-fxserver.conf
+        - /opt/fxserver/.ssh
+        - /opt/fxserver/.ssh/server-data-deploy-key
+      register: fxserver_test_files
+
+    - name: Check the checkout, secrets.cfg, no firewall or journald file, and no deploy key left
+      vars:
+        st: "{{ fxserver_test_files.results | map(attribute='stat') | list }}"
+      ansible.builtin.assert:
+        that:
+          - st[0].isdir and st[0].pw_name == 'fxserver'
+          - st[1].mode == '0600' and st[1].pw_name == 'fxserver'
+          - not st[2].exists
+          - not st[3].exists
+          - st[4].isdir and st[4].pw_name == 'fxserver' and st[4].mode == '0700'
+          - not st[5].exists
+
+    # This scenario sets no /perf/ password, so the role must have written a random one: build
+    # 35245 (and the fake build) answer /perf/ to anyone when both convars are empty.
+    - name: Query /perf/ without credentials (no /perf/ password in this scenario's settings)
+      ansible.builtin.uri:
+        url: http://127.0.0.1:30120/perf/
+        status_code: 401
+
+    - name: Read secrets.cfg
+      ansible.builtin.slurp:
+        src: /opt/fxserver/server-data/secrets.cfg
+      register: fxserver_test_secrets_cfg
+      no_log: true
+
+    - name: Read the /perf/ credentials of secrets.cfg without showing them
+      vars:
+        text: "{{ fxserver_test_secrets_cfg.content | b64decode }}"
+      ansible.builtin.set_fact:
+        fxserver_test_perf_user: >-
+          {{ (text | regex_findall('^set sv_prometheusBasicAuthUser "([^"]*)"$', multiline=true) + ['']) | first }}
+        fxserver_test_perf_password: >-
+          {{ (text | regex_findall('^set sv_prometheusBasicAuthPassword "([^"]*)"$', multiline=true) + ['']) | first }}
+      no_log: true
+
+    - name: Check the written credentials (the default user, a random password of 32 letters and digits)
+      ansible.builtin.assert:
+        that:
+          - fxserver_test_perf_user == 'prometheus'
+          - fxserver_test_perf_password is match('^[A-Za-z0-9]{32}$')
+        quiet: true
+
+    - name: Query /perf/ with the written credentials
+      ansible.builtin.uri:
+        url: http://127.0.0.1:30120/perf/
+        url_username: "{{ fxserver_test_perf_user }}"
+        url_password: "{{ fxserver_test_perf_password }}"
+        force_basic_auth: true
+        return_content: true
+      register: fxserver_test_perf
+      no_log: true
+
+    - name: Check the /perf/ answer
+      ansible.builtin.assert:
+        that:
+          - fxserver_test_perf.content is search('^tickTime_count[{]name="svMain"[}] [0-9]+$', multiline=true)
+
+    - name: Read the git status of server-data as the service user
+      ansible.builtin.command:
+        argv:
+          - git
+          - -C
+          - /opt/fxserver/server-data
+          - status
+          - --porcelain
+          - --ignored
+      become: true
+      become_user: fxserver
+      register: fxserver_test_git_status
+      changed_when: false
+
+    - name: Check that secrets.cfg stays out of git (ignored, not tracked)
+      ansible.builtin.assert:
+        that:
+          - fxserver_test_git_status.stdout_lines == ['!! secrets.cfg']
+
+    - name: Check that the backup timer is off in this scenario
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - is-enabled
+          - fxserver-backup.timer
+      register: fxserver_test_timer
+      changed_when: false
+      failed_when: fxserver_test_timer.stdout != 'disabled'

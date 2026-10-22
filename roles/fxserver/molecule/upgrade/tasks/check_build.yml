@@ -1,0 +1,69 @@
+# Checks after a build switch. Variables: fxserver_test_current, fxserver_test_previous (build
+# numbers), fxserver_test_builds (build directories expected on disk), fxserver_test_backups
+# (labels of the archives expected in /var/backups/fxserver, oldest first).
+
+- name: Read the links
+  ansible.builtin.stat:
+    path: "/opt/fxserver/artifacts/{{ item }}"
+    follow: false
+    get_checksum: false
+  loop:
+    - current
+    - previous
+  register: fxserver_test_links
+
+- name: Check that "current" and "previous" point at the expected builds
+  ansible.builtin.assert:
+    that:
+      - fxserver_test_links.results[0].stat.lnk_target == '/opt/fxserver/artifacts/' ~ fxserver_test_current
+      - fxserver_test_links.results[1].stat.lnk_target == '/opt/fxserver/artifacts/' ~ fxserver_test_previous
+
+- name: List the build directories
+  ansible.builtin.find:
+    paths: /opt/fxserver/artifacts
+    file_type: directory
+  register: fxserver_test_dirs
+
+- name: Check which builds are on disk
+  ansible.builtin.assert:
+    that:
+      - fxserver_test_dirs.files | map(attribute='path') | map('basename') | sort == fxserver_test_builds | sort
+
+- name: List the backup archives
+  ansible.builtin.find:
+    paths: /var/backups/fxserver
+    patterns: "*.tar.zst"
+  register: fxserver_test_archives
+
+- name: Check the backups (one per switch, taken before it, oldest first)
+  vars:
+    labels: >-
+      {{ fxserver_test_archives.files | map(attribute='path') | map('basename') | sort
+         | map('regex_replace', '^fxserver-[0-9]{8}T[0-9]{6}Z-(.*)[.]tar[.]zst$', '\1') | list }}
+  ansible.builtin.assert:
+    that:
+      - labels == fxserver_test_backups
+
+- name: Query /info.json
+  ansible.builtin.uri:
+    url: http://127.0.0.1:30120/info.json
+    return_content: true
+  register: fxserver_test_info
+
+- name: Check that the expected build answers, with the settings from the git repository
+  ansible.builtin.assert:
+    that:
+      - fxserver_test_info.json.server == 'FXServer-master SERVER v1.0.0.' ~ fxserver_test_current ~ ' linux'
+      - fxserver_test_info.json.vars.sv_projectName == 'Molecule upgrade'
+
+- name: Read the textfile metrics
+  ansible.builtin.slurp:
+    src: /var/lib/node_exporter/textfile_collector/fxserver_artifact.prom
+  register: fxserver_test_prom
+
+- name: Check that the metrics name the running build
+  ansible.builtin.assert:
+    that:
+      - >-
+        (fxserver_test_prom.content | b64decode)
+        is search('^fxserver_artifact_build ' ~ fxserver_test_current ~ '$', multiline=true)

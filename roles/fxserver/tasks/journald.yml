@@ -1,0 +1,30 @@
+- name: Create the journald drop-in directory
+  ansible.builtin.file:
+    path: "{{ __fxserver_journald_dropin | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: fxserver_journald_retention | length > 0
+
+- name: Limit how long journald keeps entries (server logs can name players)
+  ansible.builtin.copy:
+    content: |
+      # Managed by Ansible (luminare.gameserver.fxserver); local changes are overwritten.
+      # Host-wide: journald drops entries older than this. Set fxserver_journald_retention: ""
+      # to leave the setting to another role.
+      [Journal]
+      MaxRetentionSec={{ fxserver_journald_retention }}
+    dest: "{{ __fxserver_journald_dropin }}"
+    owner: root
+    group: root
+    mode: "0644"
+  when: fxserver_journald_retention | length > 0
+  notify: Restart journald
+
+- name: Remove the journald drop-in when retention is left to another role
+  ansible.builtin.file:
+    path: "{{ __fxserver_journald_dropin }}"
+    state: absent
+  when: fxserver_journald_retention | length == 0
+  notify: Restart journald

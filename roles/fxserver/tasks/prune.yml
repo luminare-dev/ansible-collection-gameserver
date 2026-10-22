@@ -1,0 +1,40 @@
+# Keep fxserver_keep_builds build directories: the active build first, then the rollback target
+# ("previous"), then the highest build numbers. The order depends only on the links and the
+# directories, so a second run removes nothing more.
+
+- name: List the unpacked builds
+  ansible.builtin.find:
+    paths: "{{ fxserver_artifacts_dir }}"
+    file_type: directory
+    patterns: "^[0-9]+$"
+    use_regex: true
+    recurse: false
+  register: __fxserver_builds_found
+
+- name: Order the builds, the ones to keep first
+  ansible.builtin.set_fact:
+    __fxserver_builds_ordered: "{{ __fxserver_head + __fxserver_others }}"
+  vars:
+    __fxserver_all: "{{ __fxserver_builds_found.files | map(attribute='path') | map('basename') | list }}"
+    __fxserver_head: >-
+      {{ ([__fxserver_build] + [__fxserver_active_previous]) | select | unique | select('in', __fxserver_all) | list }}
+    __fxserver_others: >-
+      {{ __fxserver_all | reject('in', __fxserver_head) | map('int') | sort(reverse=true) | map('string') | list }}
+
+- name: Remove builds beyond fxserver_keep_builds
+  ansible.builtin.file:
+    path: "{{ fxserver_artifacts_dir }}/{{ item }}"
+    state: absent
+  loop: "{{ __fxserver_builds_ordered }}"
+  loop_control:
+    index_var: __fxserver_build_index
+  when: __fxserver_build_index >= fxserver_keep_builds | int
+
+# "previous" is second in the order whenever its build is on disk.
+- name: Remove "previous" when its build is no longer kept
+  ansible.builtin.file:
+    path: "{{ fxserver_artifacts_dir }}/previous"
+    state: absent
+  when: >-
+    __fxserver_active_previous not in __fxserver_builds_ordered
+    or fxserver_keep_builds | int < 2

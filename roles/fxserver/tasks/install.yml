@@ -1,0 +1,43 @@
+- name: Install the packages the role needs (archives, zstd backups, git and nftables when used)
+  ansible.builtin.apt:
+    name: "{{ __fxserver_packages }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Create the service group
+  ansible.builtin.group:
+    name: "{{ fxserver_user }}"
+    system: true
+    state: present
+
+- name: Create the service user (system account without a login shell)
+  ansible.builtin.user:
+    name: "{{ fxserver_user }}"
+    group: "{{ fxserver_user }}"
+    system: true
+    shell: /usr/sbin/nologin
+    home: "{{ fxserver_base_dir }}"
+    create_home: false
+    state: present
+
+- name: Create the server directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ fxserver_user }}"
+    group: "{{ fxserver_user }}"
+    mode: "0750"
+  loop:
+    - "{{ fxserver_base_dir }}"
+    - "{{ fxserver_artifacts_dir }}"
+    - "{{ fxserver_server_data_dir }}"
+    - "{{ fxserver_txdata_dir }}"
+
+- name: Create the backup directory (root only; archives contain secrets.cfg)
+  ansible.builtin.file:
+    path: "{{ fxserver_backup_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"

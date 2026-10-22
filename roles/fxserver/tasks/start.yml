@@ -1,0 +1,64 @@
+- name: Apply pending restarts (new build, unit, server.cfg or secrets.cfg)
+  ansible.builtin.meta: flush_handlers
+
+- name: Set the service state
+  ansible.builtin.systemd_service:
+    name: fxserver.service
+    state: "{{ fxserver_service_state }}"
+
+- name: Check that the server answers, roll back a failed switch
+  when: fxserver_service_state == 'started'
+  block:
+    - name: Wait until the server answers (health check)
+      ansible.builtin.include_tasks: healthcheck.yml
+
+  rescue:
+    - name: Roll back to the build that was active before
+      when:
+        - __fxserver_update | bool
+        - fxserver_rollback_on_failure | bool
+      block:
+        - name: Switch "current" back
+          ansible.builtin.include_tasks: link_current.yml
+          vars:
+            __fxserver_link_build: "{{ __fxserver_old_current }}"
+
+        - name: Point "previous" back at its old target
+          ansible.builtin.file:
+            src: "{{ fxserver_artifacts_dir }}/{{ __fxserver_old_previous }}"
+            dest: "{{ fxserver_artifacts_dir }}/previous"
+            state: link
+            force: true
+          when: __fxserver_old_previous | length > 0
+
+        - name: Remove "previous" (there was none before the switch)
+          ansible.builtin.file:
+            path: "{{ fxserver_artifacts_dir }}/previous"
+            state: absent
+          when: __fxserver_old_previous | length == 0
+
+        - name: Restart the server on the old build
+          ansible.builtin.systemd_service:
+            name: fxserver.service
+            state: restarted
+
+        - name: Wait until the old build answers
+          ansible.builtin.include_tasks: healthcheck.yml
+
+    - name: Report the failed health check
+      ansible.builtin.fail:
+        msg: "{{ __fxserver_msg_rolled_back if __fxserver_rolled_back else __fxserver_msg_down }}"
+      vars:
+        __fxserver_rolled_back: "{{ __fxserver_update | bool and fxserver_rollback_on_failure | bool }}"
+        __fxserver_msg_rolled_back: >-
+          Build {{ __fxserver_build }} did not answer at {{ fxserver_healthcheck_url }} within
+          {{ fxserver_healthcheck_timeout }} seconds, so the server was rolled back to build
+          {{ __fxserver_old_current }}, which answers again. {{ __fxserver_msg_backup }}Check
+          "journalctl -u fxserver" for the cause.
+        __fxserver_msg_backup: >-
+          {{ ('The pre-update backup is in ' ~ fxserver_backup_dir ~ '. ')
+             if fxserver_backup_before_update | bool else '' }}
+        __fxserver_msg_down: >-
+          The server (build {{ __fxserver_build }}) did not answer at {{ fxserver_healthcheck_url }}
+          within {{ fxserver_healthcheck_timeout }} seconds. Check "systemctl status fxserver" and
+          "journalctl -u fxserver".

@@ -1,0 +1,123 @@
+- name: Build the fake server artifacts on the controller
+  hosts: localhost
+  gather_facts: false
+  vars:
+    repo_root: "{{ lookup('ansible.builtin.env', 'MOLECULE_PROJECT_DIRECTORY') }}/../.."
+    fake_out: "{{ lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}/fake"
+  tasks:
+    - name: Build fake builds 35245 and 35246 and the broken fake build 35247
+      ansible.builtin.command:
+        argv: >-
+          {{ [ansible_playbook_python, '-I', repo_root ~ '/tests/fake-artifact/build.py', '--build', item.build,
+              '--out', fake_out ~ '/' ~ item.build ~ '/fx.tar.xz'] + (['--broken'] if item.broken else []) }}
+        creates: "{{ fake_out }}/{{ item.build }}/fx.tar.xz"
+      loop:
+        - {build: "35245", broken: false}
+        - {build: "35246", broken: false}
+        - {build: "35247", broken: true}
+
+- name: Prepare the test host
+  hosts: all
+  gather_facts: false
+  vars:
+    fake_out: "{{ lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}/fake"
+    # The other steps connect as "admin" (molecule.yml); that user is created here, as root.
+    ansible_user: root
+    ansible_become: false
+  tasks:
+    - name: Create the user Ansible connects as in the other steps
+      ansible.builtin.user:
+        name: admin
+        shell: /bin/bash
+        create_home: true
+        state: present
+
+    - name: Let that user run sudo without a password (the test has no password to type)
+      ansible.builtin.copy:
+        dest: /etc/sudoers.d/90-molecule-admin
+        content: "admin ALL=(ALL:ALL) NOPASSWD: ALL\n"
+        owner: root
+        group: root
+        mode: "0440"
+        validate: /usr/sbin/visudo -cf %s
+
+    - name: Install git (to create the test repository)
+      ansible.builtin.apt:
+        name: git
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Create the folders for the fake artifacts
+      ansible.builtin.file:
+        path: "/opt/fake/{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      loop: ["35245", "35246", "35247"]
+
+    - name: Copy the fake artifacts to the test host
+      ansible.builtin.copy:
+        src: "{{ fake_out }}/{{ item }}/fx.tar.xz"
+        dest: "/opt/fake/{{ item }}/fx.tar.xz"
+        owner: root
+        group: root
+        mode: "0644"
+      loop: ["35245", "35246", "35247"]
+
+    - name: Create the work tree of the test server-data repository
+      ansible.builtin.file:
+        path: /opt/fake/server-data-src
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Write the files of the test server-data repository
+      ansible.builtin.copy:
+        dest: "/opt/fake/server-data-src/{{ item.name }}"
+        content: "{{ item.content }}"
+        owner: root
+        group: root
+        mode: "0644"
+      loop:
+        - name: .gitignore
+          content: |
+            secrets.cfg
+            cache/
+        - name: server.cfg
+          content: |
+            endpoint_add_tcp "0.0.0.0:30120"
+            endpoint_add_udp "0.0.0.0:30120"
+            sv_hostname "Molecule upgrade test"
+            sets sv_projectName "Molecule upgrade"
+            sv_maxclients 16
+            set onesync on
+            exec secrets.cfg
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Commit the files and publish them as a bare repository
+      ansible.builtin.shell:
+        cmd: |
+          set -eu
+          git init --quiet --initial-branch=main .
+          git add .gitignore server.cfg
+          git -c user.name=Molecule -c user.email=molecule@example.invalid \
+            commit --quiet -m "server-data for the upgrade scenario"
+          git clone --quiet --bare . /opt/fake/server-data.git
+        chdir: /opt/fake/server-data-src
+        creates: /opt/fake/server-data.git
+        executable: /bin/bash
+
+    # The service user clones a repository owned by root; git refuses that unless it is trusted.
+    - name: Trust the test repository for every user
+      ansible.builtin.copy:
+        dest: /etc/gitconfig
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          [safe]
+            directory = /opt/fake/server-data.git

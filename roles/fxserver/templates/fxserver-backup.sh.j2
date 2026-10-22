@@ -1,0 +1,71 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# fxserver-backup: archive the game server data into one zstd-compressed tar file and keep the
+# newest {{ fxserver_backup_keep | int }} archives in {{ fxserver_backup_dir }}.
+#
+#   fxserver-backup [label]      label: lower-case letters, digits, "." and "-" (default: manual)
+#
+# luminare.gameserver.fxserver runs it with the server stopped before every switch of the build
+# (label "pre-update-<old>-to-<new>"); fxserver-backup.timer runs it as "scheduled" while the
+# server runs. Archives contain secrets.cfg: they are readable by root only.
+# Restore: systemctl stop fxserver && tar --zstd -xpf <archive> -C / && systemctl start fxserver
+set -euo pipefail
+umask 077
+
+label="${1:-manual}"
+if [[ ! "$label" =~ ^[a-z0-9][a-z0-9.-]*$ ]]; then
+  echo "usage: fxserver-backup [label]   (label: a-z, 0-9, '.' and '-')" >&2
+  exit 2
+fi
+
+dest={{ fxserver_backup_dir | quote }}
+keep={{ fxserver_backup_keep | int }}
+textfile_dir={{ fxserver_textfile_dir | quote }}
+# Paths relative to / (tar stores them without the leading slash).
+paths=({% for path in fxserver_backup_paths %} {{ path | regex_replace('^/+', '') | quote }}{% endfor %} )
+excludes=({% for path in fxserver_backup_exclude %} {{ path | regex_replace('^/+', '') | quote }}{% endfor %} )
+
+mkdir -p -- "$dest"
+while :; do
+  stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  archive="$dest/fxserver-$stamp-$label.tar.zst"
+  [ -e "$archive" ] || break
+  sleep 1
+done
+partial="$dest/.fxserver-$stamp-$label.tar.zst.partial"
+trap 'rm -f -- "$partial"' EXIT
+
+args=(--create --zstd --file "$partial" --directory /)
+for path in "${excludes[@]}"; do
+  args+=("--exclude=$path")
+done
+
+status=0
+tar "${args[@]}" "${paths[@]}" || status=$?
+# GNU tar exits with 1 when a file changed while it was read (possible while the server runs);
+# every other file is complete in the archive. 2 or more is a real error.
+if [ "$status" -gt 1 ]; then
+  echo "fxserver-backup: tar failed with exit status $status" >&2
+  exit "$status"
+fi
+mv -f -- "$partial" "$archive"
+trap - EXIT
+echo "fxserver-backup: wrote $archive ($(stat -c %s "$archive") bytes)"
+
+# Retention: the archive names sort by time, newest first.
+mapfile -t archives < <(find "$dest" -maxdepth 1 -type f -name 'fxserver-*.tar.zst' -printf '%f\n' | sort -r)
+for old in "${archives[@]:keep}"; do
+  rm -f -- "${dest:?}/$old"
+  echo "fxserver-backup: removed $old (keeping $keep)"
+done
+
+if [ -n "$textfile_dir" ] && [ -d "$textfile_dir" ]; then
+  metrics="$textfile_dir/.fxserver_backup.prom.$$"
+  {
+    echo "# HELP fxserver_backup_last_success_timestamp_seconds Unix time of the last complete fxserver-backup archive."
+    echo "# TYPE fxserver_backup_last_success_timestamp_seconds gauge"
+    echo "fxserver_backup_last_success_timestamp_seconds $(date +%s)"
+  } > "$metrics"
+  chmod 0644 "$metrics"
+  mv -f -- "$metrics" "$textfile_dir/fxserver_backup.prom"
+fi
