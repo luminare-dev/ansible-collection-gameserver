@@ -7,8 +7,9 @@ argument_specs:
       - Keeps the previous build for a rollback (set fxserver_build back), checks the server with
         a health check after every switch and rolls back automatically when it fails.
       - Writes server-data (a git checkout or a minimal server.cfg) and secrets.cfg (mode 0600),
-        a hardened systemd unit, a journald retention drop-in, the nftables drop-in
-        45-fxserver.nft for the game port and textfile metrics.
+        a hardened systemd unit that starts the server directly or through txAdmin
+        (fxserver_mode), a journald retention drop-in, the nftables drop-in 45-fxserver.nft for
+        the game port and textfile metrics.
       - Archives server-data and txData before every switch, optionally on a timer, into
         fxserver_backup_dir and keeps the newest fxserver_backup_keep archives.
     author:
@@ -175,11 +176,23 @@ argument_specs:
           - Empty never leaves /perf/ open (the server answers it to anyone when both convars are
             empty). The role then keeps the password that secrets.cfg already has, or writes a
             random one of 32 letters and digits; set this variable to scrape /perf/.
+          - When the txadmin role's observability toggle txadmin_prometheus_basic_auth is enabled
+            where this role sees it, its user and password are written instead; this variable
+            must then stay empty.
       fxserver_secrets_cfg_extra:
         type: dict
         default: {}
         no_log: true
         description: Further secret convars for secrets.cfg as name/value pairs, for example mysql_connection_string.
+      fxserver_mode:
+        type: str
+        default: plain
+        choices: [plain, txadmin]
+        description:
+          - plain starts the server directly with server.cfg (run.sh +exec server.cfg).
+          - txadmin starts txAdmin (run.sh without +exec), which starts the server once its
+            one-time web setup is done; the unit sets TXHOST_DATA_PATH to fxserver_txdata_dir.
+            Use it with luminare.gameserver.txadmin, which adds the other TXHOST_* settings.
       fxserver_game_port:
         type: int
         default: 30120
@@ -197,8 +210,11 @@ argument_specs:
         type: str
         default: http://127.0.0.1:30120/info.json
         description:
-          - URL that must answer with status 200 after every run (default follows fxserver_game_port).
-          - Change it when the server does not listen on 127.0.0.1 (fxserver_cfg endpoint).
+          - URL that must answer with status 200 after every run. The default follows the mode,
+            /info.json on fxserver_game_port for plain and txAdmin's web page
+            http://127.0.0.1:40120/ for txadmin (txAdmin starts the server only after its web
+            setup).
+          - Change it when the server or txAdmin does not listen on 127.0.0.1 or on that port.
       fxserver_healthcheck_timeout:
         type: int
         default: 180

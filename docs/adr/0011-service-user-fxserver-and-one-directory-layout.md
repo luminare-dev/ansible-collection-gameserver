@@ -38,8 +38,8 @@ stays a candidate once that test exists.
 - Bad: the git checkout of server-data runs as the service user, so the deploy key must be
   readable by the user that also runs the server. The role writes the key only for the checkout
   and removes it afterwards; a read-only deploy key limits what a leaked key allows.
-- Bad: the unit always starts the server with `server.cfg`; this version has no `fxserver_mode`.
-  Running the server under txAdmin needs a second `ExecStart` in this role's unit template,
-  chosen by a role variable, rather than a drop-in that resets `ExecStart`, so that the unit file
-  alone shows how the server starts; the txAdmin drop-in `fxserver.service.d/10-txadmin.conf`
-  then only adds its environment file.
+- Note: running the server under txAdmin needs a second `ExecStart` in this role's unit
+  template, chosen by a role variable, rather than a drop-in that resets `ExecStart`, so that the
+  unit file alone shows how the server starts; the txAdmin drop-in
+  `fxserver.service.d/10-txadmin.conf` then only adds its environment file. The txadmin role
+  added that variable, `fxserver_mode` ([ADR 0015](0015-txadmin-settings-as-environment-variables.md)).

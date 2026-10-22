@@ -1,0 +1,22 @@
+galaxy_info:
+  author: Luminare Development
+  description: >-
+    Configure txAdmin (shipped with the FXServer build) as code with its TXHOST_* variables and
+    keep its web port closed to everyone but loopback and chosen sources
+  license: Apache-2.0
+  min_ansible_version: "2.21"
+  platforms:
+    - name: Debian
+      versions:
+        - trixie
+    - name: Ubuntu
+      versions:
+        - noble
+  galaxy_tags:
+    - gameserver
+    - fxserver
+    - txadmin
+    - nftables
+# luminare.gameserver.fxserver (fxserver_mode: txadmin) must run first; it is not listed here, so
+# that a playbook shows both roles and their variables (see the role README).
+dependencies: []

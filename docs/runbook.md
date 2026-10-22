@@ -1,7 +1,8 @@
 # Runbook
 
-The first entries cover the `fxserver` role on a managed host; the last two cover the automation
-in this repository (the weekly Molecule run and the release). Commands run as root on the host.
+The first entries cover the `fxserver` and `txadmin` roles on a managed host; the last two cover
+the automation in this repository (the weekly Molecule run and the release). Commands run as root
+on the host.
 
 ## Failure: a playbook run stops with "did not answer … rolled back to build …"
 
@@ -42,6 +43,26 @@ in this repository (the weekly Molecule run and the release). Commands run as ro
 | **Diagnosis** | `journalctl -u fxserver-backup -n 50`. tar exit status 2 means a real error, typically a full disk (`df -h /var/backups`) or a path in `fxserver_backup_paths` that does not exist. With `fxserver_textfile_dir` set, `fxserver_backup_last_success_timestamp_seconds` shows the last good run. |
 | **Mitigation** | Free disk space, then run `systemctl start fxserver-backup.service` and check that a new archive appears. |
 | **Fix** | Lower `fxserver_backup_keep`, add large rebuildable folders to `fxserver_backup_exclude`, or give `/var/backups` more space. |
+
+## Failure: the game server is offline under txAdmin
+
+| | |
+|---|---|
+| **Meaning** | With `fxserver_mode: txadmin`, `fxserver.service` runs and txAdmin answers on port 40120, but the game server does not answer on port 30120. |
+| **Impact** | Players cannot connect. The playbook still passes: under txAdmin its health check only covers txAdmin's web page. |
+| **Diagnosis** | Open the panel through an SSH tunnel (`ssh -L 40120:127.0.0.1:40120 <host>`) and read its live console, or query `curl -fsS -H "x-txadmin-envtoken: <token>" http://127.0.0.1:40120/host/status` (with `txadmin_api_token` set): `isConfigured: false` means the one-time setup is not done; `status: OFFLINE` with a finished setup means txAdmin did not start the server. Quiet mode keeps the server's own output out of the journal; it is in txAdmin's live console and under `/opt/fxserver/txData/default/logs/`. Common causes: the setup is not done, `server.cfg` breaks a `TXHOST_*` limit (endpoint address or port, `sv_maxclients`), or the license key in `secrets.cfg` is invalid. |
+| **Mitigation** | Start the server from txAdmin's web page once the cause is fixed. |
+| **Fix** | Finish the one-time setup (server data `/opt/fxserver/server-data`, config file `server.cfg`), or correct `server.cfg` or the `txadmin_*` variables in the inventory and run the playbook; the txadmin role checks `server.cfg` against the limits it sets. |
+
+## Failure: the txadmin role says "txAdmin did not answer"
+
+| | |
+|---|---|
+| **Meaning** | After the txadmin role restarted `fxserver.service` with new settings, txAdmin's web page did not answer within `txadmin_healthcheck_timeout` seconds. |
+| **Impact** | The panel is unavailable, and so is the game server, which txAdmin supervises. |
+| **Diagnosis** | `journalctl -u fxserver -n 100`. txAdmin stops at boot when a `TXHOST_*` value is invalid; its error names the variable and can print the value, so treat that log as secret and never paste it unredacted. `ss -ltnp 'sport = :40120'` shows whether another process holds the port. |
+| **Mitigation** | Revert the last change of the `txadmin_*` variables in the inventory and run the playbook. On the host, `rm /etc/systemd/system/fxserver.service.d/10-txadmin.conf && systemctl daemon-reload && systemctl restart fxserver` starts txAdmin with its defaults (port 40120, still behind the nftables drop-in) until the next run. |
+| **Fix** | Correct the variable. If a newer txAdmin changed its rules, see the [upgrade guide](upgrade.md#under-txadmin). |
 
 ## Failure: the `molecule` check is red
 

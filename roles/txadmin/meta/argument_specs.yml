@@ -1,0 +1,154 @@
+argument_specs:
+  main:
+    short_description: Configure txAdmin with its TXHOST_* variables and keep its web port private
+    description:
+      - Writes the txAdmin settings as TXHOST_* environment variables into /etc/fxserver/txadmin.env
+        (mode 0600, root) and adds that file to fxserver.service with the drop-in
+        fxserver.service.d/10-txadmin.conf. Needs luminare.gameserver.fxserver with
+        fxserver_mode txadmin first.
+      - Writes the nftables drop-in 40-txadmin.nft that accepts the web port only from loopback and
+        txadmin_firewall_sources (checked with nft together with /etc/nftables.conf).
+      - Never sets TXHOST_INTERFACE to a loopback address, and never writes txAdmin's own files
+        (admins.json, config.json in txData).
+      - Checks every setting before the first change and restarts the service only when it runs.
+    author:
+      - Luminare Development
+    options:
+      txadmin_port:
+        type: int
+        default: 40120
+        description:
+          - Web port of txAdmin (TXHOST_TXA_PORT); not 30120. The fxserver role's default health
+            check uses 40120, so set fxserver_healthcheck_url too when you change it.
+      txadmin_interface:
+        type: str
+        default: ""
+        description:
+          - TXHOST_INTERFACE. Empty (recommended) lets txAdmin listen on every IPv4 address and
+            leaves the game server's endpoints alone.
+          - Any IPv4 address makes txAdmin listen there only and forces every endpoint_add_* line
+            of server.cfg onto it; loopback addresses (127.0.0.0/8) are refused, because the game
+            server would then listen on loopback only.
+      txadmin_public_url:
+        type: str
+        default: ""
+        description: Public URL of txAdmin shown in its boot message (TXHOST_TXA_URL), for example the tunnel hostname.
+      txadmin_max_slots:
+        type: int
+        default: 0
+        description:
+          - Highest sv_maxclients txAdmin accepts (TXHOST_MAX_SLOTS); 0 leaves it unset. The role
+            checks server.cfg against it.
+      txadmin_game_name:
+        type: str
+        default: ""
+        choices: ["", fivem, redm]
+        description: Restricts txAdmin's setup to one game (TXHOST_GAME_NAME); empty leaves it unset.
+      txadmin_fxs_port:
+        type: int
+        default: 0
+        description:
+          - Game port that txAdmin enforces for every endpoint_add_* line (TXHOST_FXS_PORT); 0
+            leaves it unset. Not 40120-40150 and not txadmin_port.
+      txadmin_quiet_mode:
+        type: bool
+        default: true
+        description:
+          - TXHOST_QUIET_MODE. true keeps the game server's console (joins, chat, resource output)
+            out of txAdmin's output and so out of the journal; it stays visible in txAdmin's live
+            console.
+      txadmin_ignore_deprecated_configs:
+        type: bool
+        default: true
+        description:
+          - TXHOST_IGNORE_DEPRECATED_CONFIGS. true makes txAdmin ignore the old txAdminPort,
+            txAdminInterface and txDataPath convars, so only this role's settings apply.
+      txadmin_api_token:
+        type: str
+        default: ""
+        no_log: true
+        description:
+          - Token for txAdmin's /host/status endpoint (TXHOST_API_TOKEN), 16-48 letters, digits,
+            "_" or "-"; secret. Empty leaves the endpoint off; "disabled" (no token) is refused.
+          - Send it in the x-txadmin-envtoken header, not in the URL.
+      txadmin_default_account_name:
+        type: str
+        default: ""
+        description:
+          - User name of the master account that txAdmin creates on its first start
+            (TXHOST_DEFAULT_ACCOUNT); empty creates none and txAdmin asks for a PIN instead.
+          - Only used while txData has no admins.json; later changes do nothing.
+      txadmin_default_account_fivem_id:
+        type: str
+        default: ""
+        description:
+          - Numeric account ID (1-8 digits) for the Cfx.re login of the default account; empty for
+            none. The user name must then match that account's name.
+      txadmin_default_account_password_hash:
+        type: str
+        default: ""
+        no_log: true
+        description:
+          - bcrypt hash ($2a$, $2b$ or $2y$) of the default account's backup password; secret.
+            A FiveM ID, a hash or both must be set with the user name.
+      txadmin_deployer_prefill:
+        type: dict
+        default: {}
+        no_log: true
+        description:
+          - Values that txAdmin's deployer suggests when it deploys a new server (keys db_host,
+            db_port, db_user, db_password, db_name, license_key for TXHOST_DEFAULT_DBHOST,
+            DBPORT, DBUSER, DBPASS, DBNAME and TXHOST_DEFAULT_CFXKEY); secret. They never change
+            an existing server.cfg.
+      txadmin_prometheus_basic_auth:
+        type: dict
+        default:
+          enabled: false
+          user: prometheus
+          password: ""
+        description:
+          - Observability toggle. With enabled true, sv_prometheusBasicAuthUser and
+            sv_prometheusBasicAuthPassword (user, password) are written into secrets.cfg and
+            protect /perf/ on the game port.
+          - secrets.cfg belongs to the fxserver role, which reads this variable too; set it in the
+            inventory or the play and leave fxserver_perf_password empty. The role checks
+            secrets.cfg and stops when the lines are missing.
+        options:
+          enabled:
+            type: bool
+            description: Write the two convars.
+          user:
+            type: str
+            description: User name for /perf/ (letters, digits, "_", "." and "-").
+          password:
+            type: str
+            no_log: true
+            description: Password for /perf/, at least 24 characters without spaces or quotes; secret.
+      txadmin_firewall_manage:
+        type: bool
+        default: false
+        description:
+          - false writes /etc/nftables.d/40-txadmin.nft only when /etc/nftables.d exists; true also
+            creates the directory and installs nftables. Either way /etc/nftables.conf must define
+            table inet filter and include /etc/nftables.d/*.nft.
+      txadmin_firewall_required:
+        type: bool
+        default: true
+        description:
+          - Stop before any change when the drop-in cannot be written (no /etc/nftables.d and
+            txadmin_firewall_manage false). Set false only when another firewall blocks the port.
+      txadmin_firewall_reload:
+        type: bool
+        default: true
+        description: Restart nftables.service after the drop-in changed.
+      txadmin_firewall_sources:
+        type: list
+        elements: str
+        default: []
+        description:
+          - IPv4 or IPv6 addresses or networks that may reach the web port besides loopback, for
+            example the host that runs the tunnel connector; /0 networks are refused.
+      txadmin_healthcheck_timeout:
+        type: int
+        default: 120
+        description: Seconds to wait for txAdmin's web page after a restart (at least 5).

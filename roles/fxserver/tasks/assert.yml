@@ -21,6 +21,7 @@
       - fxserver_keep_builds | int >= 1
       - fxserver_backup_keep | int >= 1
       - fxserver_game_port | int >= 1 and fxserver_game_port | int <= 65535
+      - fxserver_mode != 'txadmin' or fxserver_game_port | int < 40120 or fxserver_game_port | int > 40150
       - fxserver_healthcheck_timeout | int >= 5
       - >-
         fxserver_journald_retention == ''
@@ -29,8 +30,9 @@
       - (fxserver_backup_paths + fxserver_backup_exclude) | reject('match', '^/[^ \t\r\n]+$') | list | length == 0
     fail_msg: >-
       Invalid setting: fxserver_build must be a positive build number, fxserver_keep_builds and
-      fxserver_backup_keep at least 1, fxserver_game_port 1-65535, fxserver_healthcheck_timeout at
-      least 5 seconds, fxserver_journald_retention a journald time span such as 14day (or ""), and
+      fxserver_backup_keep at least 1, fxserver_game_port 1-65535 (with fxserver_mode txadmin not
+      40120-40150, which txAdmin keeps for itself), fxserver_healthcheck_timeout at least 5
+      seconds, fxserver_journald_retention a journald time span such as 14day (or ""), and
       fxserver_backup_paths/fxserver_backup_exclude absolute paths without spaces.
     quiet: true
 
@@ -79,11 +81,16 @@
            else 'placeholder' if fxserver_license_key == 'CHANGE_ME_LICENSE_KEY'
            else 'ok' if fxserver_license_key is match('^[A-Za-z0-9_-]+$')
            else 'invalid' }}
+      perf_source: >-
+        {{ 'invalid' if (txadmin_prometheus_basic_auth | default({})) is not mapping
+           else 'both' if __fxserver_perf_from_txadmin | bool and fxserver_perf_password | length > 0
+           else 'ok' }}
       perf_password: >-
-        {{ 'unset' if fxserver_perf_password | length == 0
-           else 'ok' if fxserver_perf_password | length >= 24 and fxserver_perf_password is match('^[^" \t\r\n]+$')
+        {{ 'unset' if __fxserver_perf_password | length == 0
+           else 'placeholder' if __fxserver_perf_password is match('(?i)^change_?me')
+           else 'ok' if __fxserver_perf_password | length >= 24 and __fxserver_perf_password is match('^[^" \t\r\n]+$')
            else 'invalid' }}
-      perf_user: "{{ 'ok' if fxserver_perf_user is match('^[A-Za-z0-9_.-]+$') else 'invalid' }}"
+      perf_user: "{{ 'ok' if __fxserver_perf_user is match('^[A-Za-z0-9_.-]+$') else 'invalid' }}"
       extra: >-
         {{ 'ok' if (fxserver_secrets_cfg_extra | dict2items | rejectattr('key', 'match', '^[A-Za-z_][A-Za-z0-9_]*$')
                     | list | length == 0)
@@ -102,6 +109,18 @@
       CHANGE_ME_LICENSE_KEY, which is refused); allowed characters are letters, digits, "_" and "-".
     quiet: true
 
+- name: Check where the /perf/ credentials come from (the values are never shown)
+  ansible.builtin.assert:
+    that:
+      - __fxserver_secret_checks.perf_source == 'ok'
+      - __fxserver_secret_checks.perf_password != 'unset' or not __fxserver_perf_from_txadmin | bool
+    fail_msg: >-
+      The /perf/ credentials come from two places or are incomplete: txadmin_prometheus_basic_auth
+      (the txadmin role's observability toggle) must be a map of enabled, user and password; when
+      its enabled is true, it needs a password and fxserver_perf_password must stay empty. Set the
+      credentials in one place only.
+    quiet: true
+
 - name: Check the other secrets (the values are never shown)
   ansible.builtin.assert:
     that:
@@ -109,9 +128,11 @@
       - __fxserver_secret_checks.perf_user == 'ok'
       - __fxserver_secret_checks.extra == 'ok'
     fail_msg: >-
-      fxserver_perf_password must be empty or at least 24 characters without spaces or quotes,
-      fxserver_perf_user letters, digits, "_", "." and "-", and fxserver_secrets_cfg_extra a map of
-      convar names to values without quotes or line breaks.
+      The /perf/ password (fxserver_perf_password or txadmin_prometheus_basic_auth.password) must be
+      empty or at least 24 characters without spaces or quotes and not a CHANGE_ME placeholder
+      (it is {{ __fxserver_secret_checks.perf_password }}), the /perf/ user name
+      (fxserver_perf_user or txadmin_prometheus_basic_auth.user) letters, digits, "_", "." and "-",
+      and fxserver_secrets_cfg_extra a map of convar names to values without quotes or line breaks.
     quiet: true
 
 # The drop-in is written when fxserver_firewall_manage is true or /etc/nftables.d exists, and it

@@ -71,7 +71,8 @@ Compare `recommended` with the build in `fxserver_build` (or with the metric
    (`/var/backups/fxserver/fxserver-<time>-pre-update-<old>-to-<new>.tar.zst`) before it writes
    this run's server-data and `secrets.cfg`, switches the
    `current` link, starts the server and waits up to `fxserver_healthcheck_timeout` seconds
-   (default 180) for `/info.json`. If the new build does not answer, the role switches back,
+   (default 180) for `/info.json` (txAdmin's web page with `fxserver_mode: txadmin`). If the new
+   build does not answer, the role switches back,
    starts the old build again and fails with a message naming both builds.
 4. Check the result:
 
@@ -99,6 +100,16 @@ systemctl restart fxserver
 Then set `fxserver_build` in your inventory to the build that now runs; otherwise the next
 playbook run switches forward again. To restore data from a backup as well, see the
 [runbook](runbook.md#restore-a-backup-of-server-data-and-txdata).
+
+### Under txAdmin
+
+txAdmin ships with every server build, so updating `fxserver_build` also updates txAdmin (build
+35245 ships txAdmin 8.1.1). With `fxserver_mode: txadmin` the role's health check waits for
+txAdmin's web page, not for the game server: after the update, check in txAdmin, or with
+`curl -fsS http://127.0.0.1:30120/info.json`, that txAdmin started the game server again. The
+txadmin role checks its `TXHOST_*` values against the rules of txAdmin 8.1.1; before you move to a
+build with a newer txAdmin, read txAdmin's release notes and its `docs/env-config.md` for changed
+variables.
 
 ## Version notes
 

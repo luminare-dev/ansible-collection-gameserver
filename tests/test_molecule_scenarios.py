@@ -158,6 +158,7 @@ class ScenarioListTest(unittest.TestCase):
         self.assertEqual(list(roles), sorted(roles))
         self.assertEqual(ms.duplicate_instances(ms.matrix(roles)), [])
         self.assertEqual(roles.get("fxserver"), ["default", "upgrade"])
+        self.assertEqual(roles.get("txadmin"), ["default"])
 
     def test_every_platform_has_an_image_in_the_shared_dockerfile(self):
         """The matrix platforms are exactly the images that Dockerfile.j2 can build."""

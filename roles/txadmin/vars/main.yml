@@ -1,0 +1,62 @@
+# Internal values of luminare.gameserver.txadmin (not meant to be overridden).
+
+__txadmin_unit: fxserver.service
+__txadmin_env_file: /etc/fxserver/txadmin.env
+__txadmin_dropin: /etc/systemd/system/fxserver.service.d/10-txadmin.conf
+__txadmin_nft_dir: /etc/nftables.d
+__txadmin_nft_dropin: /etc/nftables.d/40-txadmin.nft
+
+# txAdmin listens on txadmin_interface, or on every IPv4 address when it is empty or 0.0.0.0.
+__txadmin_check_host: "{{ '127.0.0.1' if txadmin_interface in ['', '0.0.0.0'] else txadmin_interface }}"
+
+__txadmin_perf: >-
+  {{ {'enabled': false, 'user': 'prometheus', 'password': ''} | combine(txadmin_prometheus_basic_auth) }}
+
+# Keys of txadmin_deployer_prefill and the variables txAdmin reads them from (deployer pre-fill
+# only: txAdmin uses them as suggestions when it deploys a new server, never for server.cfg).
+__txadmin_prefill_names:
+  db_host: TXHOST_DEFAULT_DBHOST
+  db_port: TXHOST_DEFAULT_DBPORT
+  db_user: TXHOST_DEFAULT_DBUSER
+  db_password: TXHOST_DEFAULT_DBPASS
+  db_name: TXHOST_DEFAULT_DBNAME
+  license_key: TXHOST_DEFAULT_CFXKEY
+
+# TXHOST_DEFAULT_ACCOUNT: username:fivemId[:bcrypt hash] (the FiveM ID may be empty).
+__txadmin_default_account: >-
+  {{ txadmin_default_account_name ~ ':' ~ txadmin_default_account_fivem_id
+     ~ ((':' ~ txadmin_default_account_password_hash) if txadmin_default_account_password_hash | length > 0
+        else '') }}
+
+# The lines of the environment file as [name, value] pairs; settings left empty are left out
+# (the template adds the txadmin_deployer_prefill lines after them).
+# TXHOST_DATA_PATH is not here: the fxserver role's unit sets it (fxserver_txdata_dir), so that
+# txAdmin uses that folder from its very first start.
+__txadmin_env: >-
+  {{ [['TXHOST_TXA_PORT', txadmin_port | string]]
+     + ([['TXHOST_INTERFACE', txadmin_interface]] if txadmin_interface | length > 0 else [])
+     + ([['TXHOST_TXA_URL', txadmin_public_url]] if txadmin_public_url | length > 0 else [])
+     + ([['TXHOST_FXS_PORT', txadmin_fxs_port | string]] if txadmin_fxs_port | int > 0 else [])
+     + ([['TXHOST_MAX_SLOTS', txadmin_max_slots | string]] if txadmin_max_slots | int > 0 else [])
+     + ([['TXHOST_GAME_NAME', txadmin_game_name]] if txadmin_game_name | length > 0 else [])
+     + ([['TXHOST_QUIET_MODE', 'true']] if txadmin_quiet_mode | bool else [])
+     + ([['TXHOST_IGNORE_DEPRECATED_CONFIGS', 'true']] if txadmin_ignore_deprecated_configs | bool else [])
+     + ([['TXHOST_API_TOKEN', txadmin_api_token]] if txadmin_api_token | length > 0 else [])
+     + ([['TXHOST_DEFAULT_ACCOUNT', __txadmin_default_account]]
+        if txadmin_default_account_name | length > 0 else []) }}
+
+__txadmin_packages: "{{ ['nftables'] if txadmin_firewall_manage | bool else [] }}"
+
+# Patterns for assert.yml (txAdmin 8.1.1 rules where txAdmin has one: core/boot/getHostVars.ts,
+# core/globalData.ts and shared/consts.ts).
+__txadmin_ipv4_octet_re: '(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])'
+__txadmin_ipv4_re: '^({{ __txadmin_ipv4_octet_re }}[.]){3}{{ __txadmin_ipv4_octet_re }}$'
+__txadmin_bcrypt_re: '^([$]2[aby][$][0-9]{2}[$][A-Za-z0-9./]{53})?$'
+__txadmin_license_key_re: '^(cfxk_[A-Za-z0-9_]{1,60}_[A-Za-z0-9_]{1,20}|[A-Za-z0-9_]{32})?$'
+# A value systemd passes on unchanged and txAdmin accepts: not empty, no line break or backslash,
+# no space or quote at either end (systemd strips them, txAdmin refuses quoted values).
+__txadmin_safe_value_re: '^[^\s"''\\]([^\r\n\\]*[^\s"''\\])?$'
+__txadmin_maxclients_re: '^[ \t]*sv_maxclients[ \t]+"?([0-9]+)'
+__txadmin_endpoint_re: '^[ \t]*endpoint_add_(?:tcp|udp)[ \t]+"?([^" \t\r]+)'
+__txadmin_nft_table_re: '^[ \t]*table[ \t]+inet[ \t]+filter\b'
+__txadmin_nft_include_re: '^[ \t]*include[ \t]+"/etc/nftables[.]d/[*][.]nft"[ \t]*$'

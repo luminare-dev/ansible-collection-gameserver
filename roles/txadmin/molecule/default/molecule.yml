@@ -1,0 +1,66 @@
+# Scenario "default": the fxserver role with fxserver_mode txadmin and the fake build 35245
+# (tests/fake-artifact/), then this role. The fake starts like txAdmin when run.sh has no +exec:
+# it reads the TXHOST_* variables, answers on the web port and starts the fake game server.
+# Both nftables drop-ins are loaded in the container's own network namespace, so verify.yml can
+# show that the web port is closed to a source outside txadmin_firewall_sources while the game
+# port stays open. Shared settings (driver, sequence with idempotence, roles path) come from
+# .config/molecule/config.yml.
+platforms:
+  - name: gs-txadmin-debian13
+    image: gs-debian13
+    dockerfile: ../../../../molecule/resources/Dockerfile.j2
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    tmpfs:
+      - /run
+      - /run/lock
+    command: /lib/systemd/systemd
+  - name: gs-txadmin-ubuntu2404
+    image: gs-ubuntu2404
+    dockerfile: ../../../../molecule/resources/Dockerfile.j2
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    tmpfs:
+      - /run
+      - /run/lock
+    command: /lib/systemd/systemd
+
+provisioner:
+  name: ansible
+  inventory:
+    group_vars:
+      all:
+        # Test values only: the fake accepts any license key, and none of these is a real secret.
+        # The hash has the shape of a bcrypt hash but is no hash of any password. Molecule expands
+        # environment variables in this file, so every dollar sign of the hash is written twice.
+        fxserver_mode: txadmin
+        fxserver_license_key: molecule-dummy-key
+        fxserver_cfg:
+          hostname: Molecule txAdmin test
+          project_name: Molecule txAdmin
+          max_clients: 40
+        txadmin_public_url: https://demo-tx.example.com
+        txadmin_max_slots: 48
+        txadmin_game_name: fivem
+        txadmin_api_token: molecule-test-token-0123456789
+        txadmin_default_account_name: molecule_admin
+        txadmin_default_account_password_hash: "$$2b$$12$$molecule.test.salt.000molecule.test.hash.not.a.pass00"
+        txadmin_deployer_prefill:
+          db_host: 127.0.0.1
+          db_name: molecule_db
+          db_password: molecule-db-password-0123
+        # The observability toggle is set here, where both roles read it (the fxserver role
+        # writes secrets.cfg).
+        txadmin_prometheus_basic_auth:
+          enabled: true
+          user: prometheus
+          password: molecule-perf-password-0123456789
+        # 198.51.100.8/29 may reach the web port; verify.yml connects from 198.51.100.10 (inside)
+        # and 198.51.100.200 (outside) through a veth pair in the container.
+        txadmin_firewall_sources:
+          - 198.51.100.8/29
+          - 2001:db8::/64

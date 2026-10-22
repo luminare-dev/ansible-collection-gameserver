@@ -1,7 +1,11 @@
 # {{ ansible_managed }}
+{% if fxserver_mode == 'txadmin' %}
+# luminare.gameserver.fxserver: the game server (FXServer) under txAdmin (fxserver_mode: txadmin).
+{% else %}
 # luminare.gameserver.fxserver: the game server (FXServer), started directly with server.cfg.
+{% endif %}
 [Unit]
-Description=Game server (FXServer)
+Description=Game server (FXServer{{ ' under txAdmin' if fxserver_mode == 'txadmin' else '' }})
 Documentation=https://github.com/luminare-dev/ansible-collection-gameserver/tree/main/roles/fxserver
 After=network-online.target mariadb.service
 Wants=network-online.target
@@ -12,7 +16,16 @@ User={{ fxserver_user }}
 Group={{ fxserver_user }}
 WorkingDirectory={{ fxserver_server_data_dir }}
 # "current" points at the active build; the role switches it with one rename.
+{% if fxserver_mode == 'txadmin' %}
+# Without "+exec" the server build starts txAdmin, which starts the server with the server-data
+# folder and config file chosen in its one-time web setup. TXHOST_DATA_PATH keeps txAdmin's data
+# (admins, settings, logs) in {{ fxserver_txdata_dir }} from its first start on; the other TXHOST_*
+# settings come from the txadmin role's drop-in fxserver.service.d/10-txadmin.conf.
+Environment="TXHOST_DATA_PATH={{ fxserver_txdata_dir }}"
+ExecStart=/bin/bash {{ fxserver_artifacts_dir }}/current/run.sh
+{% else %}
 ExecStart=/bin/bash {{ fxserver_artifacts_dir }}/current/run.sh +exec server.cfg
+{% endif %}
 Restart=on-failure
 RestartSec=10
 TimeoutStopSec=60

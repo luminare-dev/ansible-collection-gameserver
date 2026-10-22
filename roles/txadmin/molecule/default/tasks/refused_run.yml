@@ -1,0 +1,28 @@
+# One run of a role (refused_role, default txadmin) with settings it must refuse, set as variables
+# of the include_tasks call in verify.yml. The run has to fail with refused_message in the error,
+# at the role's checks.
+- name: Run the role with settings it must refuse
+  block:
+    - name: Include the role
+      ansible.builtin.include_role:
+        name: "{{ refused_role | default('txadmin') }}"
+
+    - name: Fail, because the role accepted the settings
+      ansible.builtin.fail:
+        msg: The role accepted settings it must refuse ({{ refused_message }}).
+
+  rescue:
+    # A failed loop task (one item per firewall source) keeps its messages per item.
+    - name: Check that the role stopped at its checks with the expected message
+      vars:
+        refused_output: >-
+          {{ ([ansible_failed_result.msg | default('')]
+              + (ansible_failed_result.results | default([]) | map(attribute='msg') | map('default', '') | list))
+             | join(' ') }}
+      ansible.builtin.assert:
+        that:
+          - ansible_failed_task.name != 'Fail, because the role accepted the settings'
+          - refused_message in refused_output
+        fail_msg: >-
+          Expected the role to stop with "{{ refused_message }}"; it stopped at
+          "{{ ansible_failed_task.name }}" with: {{ refused_output }}

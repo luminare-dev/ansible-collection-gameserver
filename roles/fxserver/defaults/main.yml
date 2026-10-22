@@ -27,19 +27,26 @@ fxserver_server_data_deploy_key: ""
 fxserver_cfg: {}
 
 # Secrets, written to secrets.cfg (mode 0600). Example inventories use CHANGE_ME_LICENSE_KEY;
-# the role refuses to start the server with that placeholder or an empty key. Without
-# fxserver_perf_password the role writes a random /perf/ password into secrets.cfg and keeps it
-# there, so /perf/ is never open.
+# the role refuses to start the server with that placeholder or an empty key. /perf/ basic auth
+# comes from fxserver_perf_* or from the txadmin role's observability toggle
+# (txadmin_prometheus_basic_auth), never from both (see vars/main.yml). Without a password the
+# role writes a random one into secrets.cfg and keeps it there, so /perf/ is never open.
 fxserver_license_key: ""
 fxserver_perf_user: prometheus
 fxserver_perf_password: ""
 fxserver_secrets_cfg_extra: {}
 
-# Service
+# Service. fxserver_mode "plain" starts the server directly with server.cfg; "txadmin" starts
+# txAdmin, which starts the server once its one-time web setup is done (luminare.gameserver.txadmin
+# adds the TXHOST_* settings). The health check follows the mode: /info.json on the game port, or
+# txAdmin's web page on its default port 40120 (set the URL when you change txadmin_port).
+fxserver_mode: plain
 fxserver_game_port: 30120
 fxserver_service_enabled: true
 fxserver_service_state: started
-fxserver_healthcheck_url: "http://127.0.0.1:{{ fxserver_game_port }}/info.json"
+fxserver_healthcheck_url: >-
+  {{ 'http://127.0.0.1:40120/' if fxserver_mode == 'txadmin'
+     else 'http://127.0.0.1:' ~ fxserver_game_port ~ '/info.json' }}
 fxserver_healthcheck_timeout: 180
 fxserver_rollback_on_failure: true
 

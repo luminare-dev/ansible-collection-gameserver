@@ -1,0 +1,31 @@
+- name: Apply pending restarts (environment file, unit drop-in, firewall)
+  ansible.builtin.meta: flush_handlers
+
+- name: Read the state of fxserver.service after the restart
+  ansible.builtin.systemd_service:
+    name: "{{ __txadmin_unit }}"
+  register: __txadmin_service_after
+
+# txAdmin stops at boot when a TXHOST_* value is invalid, so an answer also proves that it
+# accepted the environment file. A stopped service (fxserver_service_state: stopped) is left alone.
+- name: Check that txAdmin answers on its web port
+  when: __txadmin_service_after.status.ActiveState == 'active'
+  block:
+    - name: Wait for status 200 from txAdmin's web page
+      ansible.builtin.uri:
+        url: "http://{{ __txadmin_check_host }}:{{ txadmin_port }}/"
+        status_code: 200
+        timeout: 5
+      register: __txadmin_health
+      until: __txadmin_health.status | default(0) == 200
+      retries: "{{ ((txadmin_healthcheck_timeout | int) / 5) | round(0, 'ceil') | int }}"
+      delay: 5
+
+  rescue:
+    - name: Report that txAdmin does not answer
+      ansible.builtin.fail:
+        msg: >-
+          txAdmin did not answer at http://{{ __txadmin_check_host }}:{{ txadmin_port }}/ within
+          {{ txadmin_healthcheck_timeout }} seconds. "journalctl -u fxserver -n 100" shows why;
+          txAdmin stops at boot when a TXHOST_* value in {{ __txadmin_env_file }} is invalid, and
+          its error names the variable (and, for some, its value: treat that log as secret).

@@ -1,0 +1,38 @@
+- name: Create /etc/fxserver for the environment file (root only)
+  ansible.builtin.file:
+    path: "{{ __txadmin_env_file | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+
+# Secrets (API token, default account, deployer pre-fill) are in this file: no output, no diff.
+- name: Write the txAdmin environment file (TXHOST_* variables, mode 0600)
+  ansible.builtin.template:
+    src: txadmin.env.j2
+    dest: "{{ __txadmin_env_file }}"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  diff: false
+  notify: Restart fxserver for the txAdmin settings
+
+- name: Create the drop-in directory of fxserver.service
+  ansible.builtin.file:
+    path: "{{ __txadmin_dropin | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Add the environment file to fxserver.service (drop-in 10-txadmin.conf)
+  ansible.builtin.template:
+    src: 10-txadmin.conf.j2
+    dest: "{{ __txadmin_dropin }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - Reload the systemd units for the txAdmin drop-in
+    - Restart fxserver for the txAdmin settings

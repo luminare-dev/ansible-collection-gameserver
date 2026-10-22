@@ -51,16 +51,18 @@ Each release also carries the collection tarball and `SHA256SUMS`; see
 ```mermaid
 flowchart LR
     operator(["Operator"]) -->|"ansible-galaxy install<br/>from a git tag"| collection["luminare.gameserver"]
-    collection -->|"fxserver role<br/>in a playbook"| host[("Debian 13 or<br/>Ubuntu 24.04 host")]
+    collection -->|"fxserver and txadmin<br/>roles in a playbook"| host[("Debian 13 or<br/>Ubuntu 24.04 host")]
     download["Server build download<br/>(checked by sha256)"] -->|"one folder per build,<br/>links current and previous"| host
     host -->|"backup before every switch"| backups[("/var/backups/fxserver")]
     edge["luminare.infra_edge base role<br/>(optional)"] -.->|"/etc/nftables.conf<br/>with drop-in include"| host
+    admin(["Admin through an SSH tunnel<br/>or a tunnel connector"]) -->|"txAdmin port 40120:<br/>loopback and listed sources only"| host
     ci["CI: ansible-lint, unit tests,<br/>Molecule per role, scenario<br/>and platform, secret scan"] -.->|"checks every change"| collection
 ```
 
 | Role | What it does |
 |---|---|
-| [`fxserver`](roles/fxserver/README.md) | Installs a server build checked against its sha256 and runs it as a hardened systemd unit (user `fxserver`, `/opt/fxserver`); switches builds with one rename, checks `/info.json` after every switch and rolls a failed update back; backs up server-data and txData (zstd tar) before every switch and optionally every night; writes `secrets.cfg` (0600; `/perf/` always behind basic auth, with a random password when none is set), the game port drop-in `45-fxserver.nft`, a journald retention and textfile metrics. |
+| [`fxserver`](roles/fxserver/README.md) | Installs a server build checked against its sha256 and runs it as a hardened systemd unit (user `fxserver`, `/opt/fxserver`), directly with `server.cfg` or under txAdmin (`fxserver_mode`); switches builds with one rename, checks the server after every switch and rolls a failed update back; backs up server-data and txData (zstd tar) before every switch and optionally every night; writes `secrets.cfg` (0600; `/perf/` always behind basic auth, with a random password when none is set), the game port drop-in `45-fxserver.nft`, a journald retention and textfile metrics. |
+| [`txadmin`](roles/txadmin/README.md) | Configures txAdmin, the admin panel shipped with the build, through `TXHOST_*` variables in `/etc/fxserver/txadmin.env` (root, 0600) and the unit drop-in `fxserver.service.d/10-txadmin.conf`: port, optional default account (bcrypt hash) and API token, slot limit, quiet mode; never a loopback `TXHOST_INTERFACE`, never txAdmin's own files. Writes `40-txadmin.nft` (port 40120 from loopback and listed sources only), and its observability toggle puts `/perf/` basic auth into `secrets.cfg`. |
 
 - **Roles** go into `roles/<role>/`, each with a Molecule scenario in
   `roles/<role>/molecule/default/` and optional further scenarios (`fxserver` has `upgrade`); a
@@ -92,9 +94,11 @@ convention is recorded in
 [ADR 0008](docs/adr/0008-soft-dependency-on-the-infra-edge-firewall-layout.md). The `fxserver`
 role writes `/etc/nftables.d/45-fxserver.nft` (accept rules for the game port only) when that
 directory exists or `fxserver_firewall_manage` is `true`, and checks it with `nft --check`
-together with `/etc/nftables.conf` before it replaces the old file. It requires
-`table inet filter` and the line `include "/etc/nftables.d/*.nft"` in `/etc/nftables.conf` and
-stops before any change without them: the nftables package's own `/etc/nftables.conf` has no
+together with `/etc/nftables.conf` before it replaces the old file. The `txadmin` role does the
+same with `40-txadmin.nft` (port 40120 from loopback and `txadmin_firewall_sources` only), and it
+stops when it cannot write its drop-in, unless `txadmin_firewall_required` is `false`. Both roles
+require `table inet filter` and the line `include "/etc/nftables.d/*.nft"` in `/etc/nftables.conf`
+and stop before any change without them: the nftables package's own `/etc/nftables.conf` has no
 such line, so a drop-in would pass `nft --check` but never be loaded.
 
 ## Design decisions
@@ -115,6 +119,8 @@ The decisions behind this project are recorded as short ADRs in [docs/adr/](docs
 - [ADR 0012: Why builds are switched with one rename, checked and rolled back](docs/adr/0012-switch-builds-with-one-rename-check-and-roll-back.md)
 - [ADR 0013: Why local backups before every switch, and off-host copies with any tool](docs/adr/0013-local-backups-before-every-switch.md)
 - [ADR 0014: Why the tests use a fake build and one CI job per scenario](docs/adr/0014-fake-build-and-one-ci-job-per-scenario.md)
+- [ADR 0015: Why txAdmin is configured with environment variables and started by a launcher mode](docs/adr/0015-txadmin-settings-as-environment-variables.md)
+- [ADR 0016: Why the admin port test runs in the test container's own network namespace](docs/adr/0016-prove-the-admin-port-closed-in-a-container-network-namespace.md)
 
 ## Supported versions
 
@@ -125,6 +131,7 @@ The decisions behind this project are recorded as short ADRs in [docs/adr/](docs
 | Debian 13 "trixie" (managed host) | Molecule image from `debian:trixie`, pinned by digest | primary platform |
 | Ubuntu 24.04 "noble" (managed host) | Molecule image from `ubuntu:24.04`, pinned by digest | second platform |
 | Server build (`fxserver` role) | a fake build in Molecule; the default is the Recommended build 35245 of 2026-10-21 | Linux x86_64 builds; run the current Recommended build ([upgrade guide](docs/upgrade.md#which-build-to-run)) |
+| txAdmin (`txadmin` role) | a fake txAdmin in Molecule; variable rules checked against the source of txAdmin 8.1.1 (shipped with build 35245), which was also started by hand | txAdmin 8 (`TXHOST_*` variables) as shipped with the build |
 | Test tools | ansible-lint 26.10.1, Molecule 26.10.0, molecule-plugins[docker] 26.10.12 | as pinned in `requirements-test.txt` |
 
 Fixes go into the latest minor release only. See the
@@ -139,10 +146,16 @@ Fixes go into the latest minor release only. See the
   can connect, whether a real build refuses `/perf/` without credentials, and the end-to-end run
   on a fresh cloud server (two runs with `changed=0`, `/info.json` from the host, the game port
   from outside) are still open.
-- The server runs directly with `server.cfg`; this version has no role for the txAdmin panel.
-- Molecule runs in privileged systemd containers, not on virtual machines or cloud servers.
-  Kernel-level behaviour, such as a loaded nftables ruleset, is not proven by these tests: the
-  game port drop-in is validated with `nft --check`, but not loaded.
+- The `txadmin` role is tested with a fake txAdmin. The real txAdmin 8.1.1 was started by hand in
+  an isolated container to check its variables, but not under the role's unit, and no game server
+  was started through it (that needs a license key, or LAN mode, which was not tried). txAdmin's
+  one-time web setup (server data folder and `server.cfg`) is manual, and txAdmin's environment,
+  including the API token, is visible to processes of the service user.
+- Molecule runs in privileged systemd containers, not on virtual machines or cloud servers. The
+  `txadmin` scenario loads both drop-ins into the container's own network namespace and connects
+  from a second namespace (port 40120 open to a listed source only, the game port open); the
+  `fxserver` scenarios only validate their drop-in with `nft --check`. Neither replaces a check
+  from outside a real host.
 - Backups stay on the host (`/var/backups/fxserver`); copies elsewhere, for example with restic,
   are up to the operator (paths in the [role README](roles/fxserver/README.md#backups)).
 - A server with a valid license key appears in the public server list unless it runs LAN-only
@@ -169,13 +182,14 @@ Measured in this repository on 2026-10-21; the rows marked 2026-10-22 were measu
 
 | What | Value | How it was measured |
 |---|---|---|
-| Molecule `fxserver` `default` (2026-10-22) | passed on Debian 13 and Ubuntu 24.04; idempotence `changed=0` on both; the restore of the newest backup as in the runbook checked (owners, modes, `secrets.cfg`, the server answers again); 4 min 17 s for both platforms | `molecule test` in `roles/fxserver` (Molecule 26.10.0, ansible-core 2.21.5), both instances in one run, test images already in the Docker build cache, another scenario running at the same time; wall time of the `molecule test` command |
-| Molecule `fxserver` `upgrade` (2026-10-22) | passed on Debian 13 and Ubuntu 24.04, with Ansible connecting as a non-root user with sudo and no `/perf/` password set; idempotence `changed=0` on both; update together with a new server-data commit (the pre-update backup holds the old `server.cfg`), refused switch after a failed backup, five runs stopped at their checks (drop-in directory without `/etc/nftables.conf`, `/etc/nftables.conf` without the drop-in include, a quote, a line break and a resource name in `fxserver_cfg`), automatic rollback of the broken build, rollback by build number, the removed deploy key, and `/perf/` refusing a request without credentials and answering with the random password from `secrets.cfg` all checked; 9 min 58 s for both platforms | `molecule test -s upgrade` in `roles/fxserver`, same tools and method |
-| Unit tests (2026-10-22) | 143 run: 142 passed, 1 skipped (a check that applies only to the template repository) | `python3 -m unittest discover -s tests` with gitleaks 8.30.1 and markdownlint-cli2 0.23.2 on the PATH, Python 3.14.3 |
-| ansible-lint (2026-10-22) | 0 failures, 0 warnings in 67 files; profile `production` passed | `ansible-lint` from the repository root, ansible-lint 26.10.1 with ansible-core 2.21.5 |
-| Collection tarball (2026-10-22) | `luminare-gameserver-0.0.0.tar.gz`: 69 entries, about 56.7 kB (1 kB = 1000 bytes); the `fxserver` role without its Molecule scenarios; no `docs/brand/`, scripts, unit tests, fake build or Molecule files | `ansible-galaxy collection build` (ansible-core 2.21.5) twice from a fresh copy of the tree, then `tar -tzf` and the file size; the size varies by a few bytes between builds, because the archive stores file and build times |
+| Molecule `fxserver` `default` (2026-10-22) | passed on Debian 13 and Ubuntu 24.04; idempotence `changed=0` on both; the restore of the newest backup as in the runbook checked (owners, modes, `secrets.cfg`, the server answers again); 4 min 10 s for both platforms | `molecule test` in `roles/fxserver` (Molecule 26.10.0, ansible-core 2.21.5), both instances in one run, test images already in the Docker build cache, another scenario running at the same time; wall time of the `molecule test` command |
+| Molecule `fxserver` `upgrade` (2026-10-22) | passed on Debian 13 and Ubuntu 24.04, with Ansible connecting as a non-root user with sudo and no `/perf/` password set; idempotence `changed=0` on both; update together with a new server-data commit (the pre-update backup holds the old `server.cfg`), refused switch after a failed backup, five runs stopped at their checks (drop-in directory without `/etc/nftables.conf`, `/etc/nftables.conf` without the drop-in include, a quote, a line break and a resource name in `fxserver_cfg`), automatic rollback of the broken build, rollback by build number, the removed deploy key, and `/perf/` refusing a request without credentials and answering with the random password from `secrets.cfg` all checked; 10 min 46 s for both platforms | `molecule test -s upgrade` in `roles/fxserver`, same tools and method |
+| Molecule `txadmin` `default` (2026-10-22) | passed on Debian 13 and Ubuntu 24.04 (fxserver role in txAdmin mode, then the txadmin role); idempotence `changed=0` on both; environment file, drop-ins, token, default account, `/perf/` toggle and journal checked; port 40120 answered a listed source and dropped another, port 30120 stayed open; six refused runs stopped at their checks; 4 min 56 s for both platforms | `molecule test` in `roles/txadmin`, same tools and method |
+| Unit tests (2026-10-22) | 157 run: 156 passed, 1 skipped (a check that applies only to the template repository) | `python3 -m unittest discover -s tests` with gitleaks 8.30.1 and markdownlint-cli2 0.23.2 on the PATH, Python 3.14.3; all of them also under Python 3.12.15 (`python:3.12-slim`, in the release build below) |
+| ansible-lint (2026-10-22) | 0 failures, 0 warnings in 86 files; profile `production` passed | `ansible-lint` from the repository root, ansible-lint 26.10.1 with ansible-core 2.21.5 |
+| Collection tarball (2026-10-22) | `luminare-gameserver-0.0.0.tar.gz`: 92 entries, about 79.8 kB (1 kB = 1000 bytes); the `fxserver` and `txadmin` roles without their Molecule scenarios; no `docs/brand/`, scripts, unit tests, fake build or Molecule files | `ansible-galaxy collection build` (ansible-core 2.21.5) twice from a fresh copy of the tree, then `tar -tzf` and the file size; the size varies by a few bytes between builds, because the archive stores file and build times |
 | Hash-pinned test tools | 45 packages installed, `pip check` clean | `pip install --require-hashes --only-binary=:all: -r requirements-test.txt` in a `python:3.12-slim` container |
-| Release build (2026-10-22) | `ansible-collection-gameserver-0.1.0.tar.gz` and `luminare-gameserver-0.1.0.tar.gz`, one `SHA256SUMS` that verifies both; the test-command passed (143 unit tests, 2 skipped: the template-only check and the markdownlint test); with `galaxy.yml` left at 0.0.0 the step fails (2026-10-21) | `release.yml`'s test-command (with `CI=true`, so with the hash-pinned tools and the pinned gitleaks) and extra-dist-command in `python:3.12-slim` (Python 3.12.15), on a local `v0.1.0` tag with the release-please version edits applied by hand |
+| Release build (2026-10-22) | `ansible-collection-gameserver-0.1.0.tar.gz` and `luminare-gameserver-0.1.0.tar.gz`, one `SHA256SUMS` that verifies both; the test-command passed (157 unit tests, 2 skipped: the template-only check and the markdownlint test); with `galaxy.yml` left at 0.0.0 the step fails (2026-10-21) | `release.yml`'s test-command (with `CI=true`, so with the hash-pinned tools and the pinned gitleaks) and extra-dist-command in `python:3.12-slim` (Python 3.12.15), on a local `v0.1.0` tag with the release-please version edits applied by hand |
 | Install paths | git URL with a ref, `requirements.yml` with `type: git`, and the tarball: each installs `luminare.gameserver` | `ansible-galaxy collection install` against a local clone (`file://` URL) and the locally built tarball |
 
 ## Documentation and links

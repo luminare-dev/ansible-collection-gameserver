@@ -1,0 +1,23 @@
+# __txadmin_firewall_write (assert.yml): txadmin_firewall_manage is true or /etc/nftables.d
+# exists; /etc/nftables.conf (with its include line) and nft were checked there.
+- name: Create the nftables drop-in directory
+  ansible.builtin.file:
+    path: "{{ __txadmin_nft_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: txadmin_firewall_manage | bool
+
+# The candidate file is checked together with /etc/nftables.conf before it replaces the old one,
+# so a broken rule never reaches the drop-in directory.
+- name: Write the web port rules (40-txadmin.nft)
+  ansible.builtin.template:
+    src: 40-txadmin.nft.j2
+    dest: "{{ __txadmin_nft_dropin }}"
+    owner: root
+    group: root
+    mode: "0644"
+    validate: /bin/bash -c 'set -o pipefail; cat /etc/nftables.conf %s | nft --check --file /dev/stdin'
+  when: __txadmin_firewall_write | bool
+  notify: Reload nftables for the txAdmin drop-in
