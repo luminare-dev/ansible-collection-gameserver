@@ -1,0 +1,207 @@
+# 1. tests/e2e/check.yml in txadmin mode, the check the end-to-end run makes on its server.
+# 2. The settings of the example inventory reached the host through the playbook.
+# 3. The unmodified example (its CHANGE_ME_ placeholders) is refused before any change, and so is a
+#    firewall layout without the drop-in include (the playbook's pre-check).
+- name: Run the host checks of the end-to-end run (txAdmin mode)
+  ansible.builtin.import_playbook: ../../../../tests/e2e/check.yml
+  vars:
+    e2e_mode: txadmin
+
+- name: Check the settings of the example inventory on the host
+  hosts: gameservers
+  gather_facts: false
+  vars_files:
+    - vars/test-values.yml
+  vars:
+    env_file: /etc/fxserver/txadmin.env
+    expected_env:
+      - TXHOST_TXA_PORT=40120
+      - TXHOST_TXA_URL=https://demo-tx.example.com
+      - TXHOST_MAX_SLOTS=32
+      - TXHOST_GAME_NAME=fivem
+      - TXHOST_QUIET_MODE=true
+      - TXHOST_IGNORE_DEPRECATED_CONFIGS=true
+      - "{{ 'TXHOST_API_TOKEN=' ~ txadmin_api_token }}"
+      - "{{ 'TXHOST_DEFAULT_ACCOUNT=admin_name::' ~ txadmin_default_account_password_hash }}"
+  tasks:
+    - name: Read the environment file
+      ansible.builtin.slurp:
+        src: "{{ env_file }}"
+      register: txadmin_playbook_env
+      no_log: true
+
+    - name: Compare the TXHOST_* lines with the example and the test values without showing them
+      vars:
+        lines: >-
+          {{ (txadmin_playbook_env.content | b64decode).splitlines() | reject('match', '^#')
+             | reject('equalto', '') | list }}
+      ansible.builtin.set_fact:
+        txadmin_playbook_env_checks:
+          exact: "{{ lines == expected_env }}"
+          names: "{{ lines | map('regex_replace', '=.*$', '') | list }}"
+      no_log: true
+
+    - name: Check the TXHOST_* lines
+      ansible.builtin.assert:
+        that:
+          - txadmin_playbook_env_checks.exact | bool
+        fail_msg: "Unexpected environment file; variables in it: {{ txadmin_playbook_env_checks.names | join(', ') }}"
+
+    - name: Read the two nftables drop-ins and server.cfg
+      ansible.builtin.slurp:
+        src: "{{ item }}"
+      loop:
+        - /etc/nftables.d/40-txadmin.nft
+        - /etc/nftables.d/45-fxserver.nft
+        - /opt/fxserver/server-data/server.cfg
+      register: txadmin_playbook_files
+
+    - name: Check the drop-ins (port 40120 for 192.0.2.20 only, the game port for all) and server.cfg
+      vars:
+        txadmin_nft: "{{ (txadmin_playbook_files.results[0].content | b64decode).splitlines() }}"
+        fxserver_nft: "{{ (txadmin_playbook_files.results[1].content | b64decode).splitlines() }}"
+        server_cfg: "{{ (txadmin_playbook_files.results[2].content | b64decode).splitlines() }}"
+      ansible.builtin.assert:
+        that:
+          - "'add rule inet filter input ip saddr { 192.0.2.20 } tcp dport 40120 accept' in txadmin_nft"
+          - "'add rule inet filter input tcp dport 30120 accept' in fxserver_nft"
+          - "'add rule inet filter input udp dport 30120 accept' in fxserver_nft"
+          - "'sv_hostname \"Private test server\"' in server_cfg"
+          - "'sets sv_projectDesc \"Private test server.\"' in server_cfg"
+          - "'sv_maxclients 32' in server_cfg"
+          - server_cfg | last == 'exec secrets.cfg'
+
+    - name: Read the state of the backup timer
+      ansible.builtin.systemd_service:
+        name: fxserver-backup.timer
+      register: txadmin_playbook_timer
+
+    - name: Check that the nightly backup is on (fxserver_backup_timer_enabled in the example)
+      ansible.builtin.assert:
+        that:
+          - txadmin_playbook_timer.status.UnitFileState == 'enabled'
+          - txadmin_playbook_timer.status.ActiveState == 'active'
+
+    - name: Query /info.json of the game server that txAdmin started
+      ansible.builtin.uri:
+        url: http://127.0.0.1:30120/info.json
+        return_content: true
+      register: txadmin_playbook_info
+
+    - name: Check the game server (build 35245, slots from the example)
+      ansible.builtin.assert:
+        that:
+          - txadmin_playbook_info.json.server == 'FXServer-master SERVER v1.0.0.35245 linux'
+          - txadmin_playbook_info.json.vars.sv_maxClients == '32'
+
+    - name: Query /perf/ without credentials (the example turns the observability toggle on)
+      ansible.builtin.uri:
+        url: http://127.0.0.1:30120/perf/
+        status_code: 401
+
+    - name: Query /perf/ with the credentials of the toggle
+      ansible.builtin.uri:
+        url: http://127.0.0.1:30120/perf/
+        url_username: "{{ txadmin_prometheus_basic_auth.user }}"
+        url_password: "{{ txadmin_prometheus_basic_auth.password }}"
+        force_basic_auth: true
+      no_log: true
+
+# Without vars/test-values.yml the example's secrets.yml applies as it is in the repository.
+- name: Refuse the example's placeholders before any change
+  hosts: gameservers
+  gather_facts: false
+  vars:
+    watched:
+      - /etc/fxserver/txadmin.env
+      - /opt/fxserver/server-data/secrets.cfg
+      - /etc/systemd/system/fxserver.service
+  tasks:
+    - name: Read the files the roles write before the refused runs
+      ansible.builtin.stat:
+        path: "{{ item }}"
+        checksum_algorithm: sha256
+      loop: "{{ watched }}"
+      register: txadmin_playbook_before
+
+    - name: Refuse the license key placeholder (fxserver role)
+      ansible.builtin.include_tasks: ../default/tasks/refused_run.yml
+      vars:
+        refused_role: fxserver
+        refused_message: fxserver_license_key is placeholder
+
+    - name: Refuse the API token placeholder (txadmin role)
+      ansible.builtin.include_tasks: ../default/tasks/refused_run.yml
+      vars:
+        refused_role: txadmin
+        refused_message: txadmin_api_token is a placeholder
+
+    - name: Read the same files after the refused runs
+      ansible.builtin.stat:
+        path: "{{ item }}"
+        checksum_algorithm: sha256
+      loop: "{{ watched }}"
+      register: txadmin_playbook_after
+
+    - name: Check that the refused runs changed nothing
+      ansible.builtin.assert:
+        that:
+          - >-
+            txadmin_playbook_before.results | map(attribute='stat.checksum') | list
+            == txadmin_playbook_after.results | map(attribute='stat.checksum') | list
+          - >-
+            txadmin_playbook_before.results | map(attribute='stat.mtime') | list
+            == txadmin_playbook_after.results | map(attribute='stat.mtime') | list
+
+# The playbook runs this pre-check before its roles in txAdmin mode (converge.yml shows that it
+# passes with the prepared layout); here it must refuse a layout without the include line.
+- name: Refuse /etc/nftables.conf without the drop-in include (the playbook's pre-check)
+  hosts: gameservers
+  gather_facts: false
+  tasks:
+    - name: Back up /etc/nftables.conf
+      ansible.builtin.copy:
+        src: /etc/nftables.conf
+        dest: /root/nftables.conf.playbook-test
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Run the pre-check against a layout without the include line
+      block:
+        - name: Remove the include line from /etc/nftables.conf
+          ansible.builtin.lineinfile:
+            path: /etc/nftables.conf
+            line: include "/etc/nftables.d/*.nft"
+            state: absent
+
+        - name: Run the playbook's pre-check
+          ansible.builtin.include_tasks: ../../../../playbooks/tasks/check_firewall_layout.yml
+
+        - name: Fail, because the pre-check accepted the layout
+          ansible.builtin.fail:
+            msg: The pre-check accepted /etc/nftables.conf without the drop-in include.
+
+      rescue:
+        - name: Check that the pre-check stopped with its message
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_task.name == 'Require the firewall layout before txAdmin is started'
+              # The include line is the only condition that fails (the table and the folder exist).
+              - >-
+                ansible_failed_result.assertion
+                == 'gameserver_nft_text is search(gameserver_nft_include_re, multiline=true)'
+            fail_msg: >-
+              Unexpected stop at {{ ansible_failed_task.name }} ({{ ansible_failed_result.assertion | default('') }}):
+              {{ ansible_failed_result.msg | default('') }}
+
+      always:
+        - name: Restore /etc/nftables.conf
+          ansible.builtin.copy:
+            src: /root/nftables.conf.playbook-test
+            dest: /etc/nftables.conf
+            remote_src: true
+            owner: root
+            group: root
+            mode: "0755"

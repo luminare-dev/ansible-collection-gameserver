@@ -1,0 +1,11 @@
+# Test values that replace the txadmin placeholders of
+# examples/inventory/group_vars/gameservers/secrets.yml in this scenario (converge.yml loads them
+# with include_vars, verify.yml compares the host with them). None of them is a real secret: the
+# hash has the shape of a bcrypt hash but is no hash of any password. The license key placeholder
+# is replaced in converge.yml (the fake build accepts any key).
+txadmin_api_token: molecule-test-token-0123456789
+txadmin_default_account_password_hash: "$2b$12$molecule.test.salt.000molecule.test.hash.not.a.pass00"
+txadmin_prometheus_basic_auth:
+  enabled: true
+  user: prometheus
+  password: molecule-perf-password-0123456789

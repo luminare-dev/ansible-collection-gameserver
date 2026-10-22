@@ -27,10 +27,14 @@ jobs:
       # the unit tests (scripts/test.sh).
       test-command: bash scripts/test.sh
       # Uses ansible-galaxy from that virtual environment. The file name check fails the release
-      # when galaxy.yml's version (updated by release-please) does not match the tag.
+      # when galaxy.yml's version (updated by release-please) does not match the tag. Then the
+      # tarball is installed into an empty folder and its playbook and roles must pass
+      # --syntax-check (scripts/check_collection_tarball.sh), before the publish job runs.
       extra-dist-command: >-
-        "$RUNNER_TEMP/test-tools/venv/bin/ansible-galaxy" collection build --output-path dist
+        export PATH="$RUNNER_TEMP/test-tools/venv/bin:$PATH"
+        && ansible-galaxy collection build --output-path dist
         && test -f "dist/luminare-gameserver-${TAG#v}.tar.gz"
+        && bash scripts/check_collection_tarball.sh "dist/luminare-gameserver-${TAG#v}.tar.gz"
     permissions:
       contents: write        # release commit, tag, draft release, attached files
       pull-requests: write   # the release pull request

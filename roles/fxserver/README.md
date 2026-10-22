@@ -99,6 +99,10 @@ Without `fxserver_server_data_repo` the role writes a minimal `server.cfg` (conn
 disabled, no resources) from `fxserver_cfg`, for example
 `fxserver_cfg: {hostname: "Test server", max_clients: 16, resources: [my-resource]}`.
 
+The collection also ships a complete play: the playbook `luminare.gameserver.gameserver` runs this
+role and the txadmin role with the example inventory in `examples/inventory/` (see
+[Run the playbook](../../docs/install.md#run-the-playbook)).
+
 ## Variables
 
 Every variable is validated by `meta/argument_specs.yml`.

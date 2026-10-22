@@ -14,6 +14,8 @@ of this repository and a tarball built from it.
 | git (controller) | any current version | Only for the install from a git tag. |
 | Managed hosts | Debian 13 "trixie" or Ubuntu 24.04 "noble", x86_64 | The platforms the Molecule scenarios run on. |
 | Network (managed hosts) | HTTPS to the server build download | The `fxserver` role downloads a build only when it is not on the host yet; with `fxserver_server_data_repo` it also needs access to that git repository. |
+| Firewall layout (managed hosts) | nftables | With `fxserver_mode: txadmin`: `/etc/nftables.conf` with `table inet filter`, input policy drop and the last line `include "/etc/nftables.d/*.nft"`, as the `luminare.infra_edge` base role writes it. The roles add their drop-ins to `/etc/nftables.d/`. |
+| Access (managed hosts) | SSH with sudo, or root | The playbook uses `become`. |
 
 ## Install
 
@@ -67,6 +69,52 @@ ansible-galaxy collection list luminare.gameserver
 
 The output names the collection path and the installed version, for example
 `luminare.gameserver 0.1.0`.
+
+## Run the playbook
+
+The playbook `luminare.gameserver.gameserver` runs the `fxserver` role and, with
+`fxserver_mode: txadmin`, the `txadmin` role on every host of the group `gameservers`, one host
+at a time. The example inventory in `examples/inventory/` sets it up for one host in txAdmin
+mode; the Molecule scenario `roles/txadmin/molecule/playbook` runs exactly this inventory on
+every pull request, with test values for the placeholders and a fake server build.
+
+1. Set up the firewall layout on the host (see Requirements): run the `luminare.infra_edge` base
+   role, or write such an `/etc/nftables.conf` yourself. In txAdmin mode the playbook checks it
+   first and stops before any change without it: txAdmin listens on port 40120 of every IPv4
+   address from the moment the `fxserver` role starts it, and only the `txadmin` role's drop-in
+   closes the port again.
+2. Copy the example inventory from the installed collection (below the path that
+   `ansible-galaxy collection list luminare.gameserver` prints):
+
+   ```bash
+   cp -R ~/.ansible/collections/ansible_collections/luminare/gameserver/examples/inventory ./inventory
+   ```
+
+3. In `inventory/hosts.yml`, set the host name, `ansible_host` and `ansible_user`. In
+   `inventory/group_vars/gameservers/main.yml`, set `txadmin_public_url` and
+   `txadmin_firewall_sources` (the address of the host that runs your tunnel connector, or remove
+   the entry) and the names of the server.
+4. Replace every `CHANGE_ME_` value in `inventory/group_vars/gameservers/secrets.yml`, then
+   encrypt the file before it is stored anywhere, for example with
+   `ansible-vault encrypt inventory/group_vars/gameservers/secrets.yml` or with SOPS. The roles
+   refuse the placeholders, so the playbook stops before its first change until they are
+   replaced. To make the bcrypt hash of the txAdmin master account, see the
+   [txadmin README](../roles/txadmin/README.md#example-playbook).
+5. Run the playbook (add the option your encryption needs, for example `--ask-vault-pass`):
+
+   ```bash
+   ansible-playbook -i inventory luminare.gameserver.gameserver
+   ```
+
+   A second run reports `changed=0`. To run it on another group or on several hosts at once, pass
+   `-e gameserver_hosts=<pattern>` or `-e gameserver_serial=<number>`
+   ([configuration](configuration.md#playbook)).
+6. In txAdmin mode, open txAdmin through an SSH tunnel
+   (`ssh -L 40120:127.0.0.1:40120 <host>`, then `http://127.0.0.1:40120/`) or through your
+   tunnel connector, log in with the master account and finish its one-time web setup: server
+   data folder `/opt/fxserver/server-data`, config file `server.cfg`. txAdmin then starts the game
+   server; `curl -fsS http://127.0.0.1:30120/info.json` on the host shows it. In plain mode
+   (`fxserver_mode: plain`) the game server starts at once.
 
 ## Uninstall
 

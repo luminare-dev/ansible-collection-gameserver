@@ -1,0 +1,272 @@
+# Manual end-to-end run on a throwaway cloud server (docs/e2e.md): a CX23 server whose cloud
+# firewall admits only this runner, the real server build 35245 with a real license key, the
+# playbook luminare.gameserver.gameserver with the example inventory (first with fxserver_mode
+# plain, then as the example has it, with txAdmin), two runs per mode with changed=0 on the
+# second, checks on the server (tests/e2e/check.yml) and from this runner, the timings in the job
+# summary, and every resource it created deleted at the end, whatever happened before.
+#
+# It only runs when started by hand, in the protected environment "e2e" (required reviewer), with
+# the environment secrets HCLOUD_TOKEN (a token of a cloud project used for nothing else) and
+# FXSERVER_LICENSE_KEY. Without the repository variable E2E_ENABLED set to "true" the job is
+# skipped, so the workflow stays green while those secrets do not exist. Forks cannot use this
+# repository's environment or secrets.
+name: e2e
+
+on:
+  workflow_dispatch:
+    inputs:
+      image:
+        description: Operating system of the test server (a supported platform)
+        type: choice
+        options:
+          - debian-13
+          - ubuntu-24.04
+        default: debian-13
+      location:
+        description: Location of the test server
+        type: choice
+        options:
+          - nbg1
+          - fsn1
+          - hel1
+        default: nbg1
+
+permissions: {}
+
+concurrency:
+  # One run at a time: the clean-up deletes every resource that carries this workflow's label.
+  group: e2e
+  cancel-in-progress: false
+
+jobs:
+  e2e:
+    name: e2e
+    if: ${{ vars.E2E_ENABLED == 'true' }}
+    runs-on: ubuntu-24.04
+    environment: e2e
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      # hcloud CLI, bumped by hand once a month (Dependabot does not see it). The sha256 is the
+      # one in the release's checksums.txt, checked against the download on 2026-10-21.
+      HCLOUD_CLI_VERSION: "1.70.1"
+      HCLOUD_CLI_SHA256: 85182e0d51f9a26abeefd79b37de8a7fb51215d54c59ee290c3c9141e8aa887e
+      E2E_LABEL: e2e=ansible-collection-gameserver
+      SERVER_TYPE: cx23
+      IMAGE: ${{ inputs.image }}
+      LOCATION: ${{ inputs.location }}
+      ANSIBLE_NOCOLOR: "1"
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check that the environment has its secrets
+        env:
+          HCLOUD_TOKEN: ${{ secrets.HCLOUD_TOKEN }}
+          FXSERVER_LICENSE_KEY: ${{ secrets.FXSERVER_LICENSE_KEY }}
+        run: |
+          set -euo pipefail
+          missing=""
+          [ -n "${HCLOUD_TOKEN}" ] || missing="${missing} HCLOUD_TOKEN"
+          [ -n "${FXSERVER_LICENSE_KEY}" ] || missing="${missing} FXSERVER_LICENSE_KEY"
+          if [ -n "${missing}" ]; then
+            echo "::error::secrets missing in the environment e2e:${missing}"
+            exit 1
+          fi
+          echo "| Step | Seconds |" > "$RUNNER_TEMP/timings.md"
+          echo "|---|---|" >> "$RUNNER_TEMP/timings.md"
+
+      - name: Install the test tools (hash-pinned) and the hcloud CLI (sha256-pinned)
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet --require-hashes --only-binary=:all: -r requirements-test.txt
+          echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
+          mkdir -p "$RUNNER_TEMP/hcloud"
+          curl -fsSL -o "$RUNNER_TEMP/hcloud/hcloud.tar.gz" \
+            "https://github.com/hetznercloud/cli/releases/download/v${HCLOUD_CLI_VERSION}/hcloud-linux-amd64.tar.gz"
+          echo "${HCLOUD_CLI_SHA256}  $RUNNER_TEMP/hcloud/hcloud.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/hcloud/hcloud.tar.gz" -C "$RUNNER_TEMP/hcloud" hcloud
+          echo "$RUNNER_TEMP/hcloud" >> "$GITHUB_PATH"
+
+      - name: Install the collection from this checkout
+        run: |
+          set -euo pipefail
+          ansible-galaxy collection build --output-path "$RUNNER_TEMP/dist"
+          ansible-galaxy collection install "$RUNNER_TEMP"/dist/luminare-gameserver-*.tar.gz \
+            -p "$RUNNER_TEMP/collections"
+          echo "ANSIBLE_COLLECTIONS_PATH=$RUNNER_TEMP/collections" >> "$GITHUB_ENV"
+
+      - name: Create the test server (its cloud firewall admits this runner only)
+        id: server
+        env:
+          HCLOUD_TOKEN: ${{ secrets.HCLOUD_TOKEN }}
+        run: |
+          set -euo pipefail
+          start=$(date +%s)
+          name="gs-e2e-${GITHUB_RUN_ID}"
+          ssh-keygen -q -t ed25519 -N "" -C "${name}" -f "$RUNNER_TEMP/e2e_key"
+          runner_ip="$(curl -fsS --max-time 10 https://checkip.amazonaws.com | tr -d '[:space:]')"
+          if ! [[ "${runner_ip}" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
+            echo "::error::could not read the public IPv4 address of this runner"
+            exit 1
+          fi
+          jq -n --arg src "${runner_ip}/32" '[
+            {direction: "in", protocol: "tcp", port: "1-65535", source_ips: [$src]},
+            {direction: "in", protocol: "udp", port: "1-65535", source_ips: [$src]},
+            {direction: "in", protocol: "icmp", source_ips: [$src]}
+          ]' > "$RUNNER_TEMP/firewall-rules.json"
+          hcloud ssh-key create --name "${name}" --public-key-from-file "$RUNNER_TEMP/e2e_key.pub" \
+            --label "${E2E_LABEL}"
+          hcloud firewall create --name "${name}" --rules-file "$RUNNER_TEMP/firewall-rules.json" \
+            --label "${E2E_LABEL}"
+          hcloud server create --name "${name}" --type "${SERVER_TYPE}" --image "${IMAGE}" \
+            --location "${LOCATION}" --ssh-key "${name}" --firewall "${name}" --without-ipv6 \
+            --label "${E2E_LABEL}"
+          echo "ip=$(hcloud server ip "${name}")" >> "$GITHUB_OUTPUT"
+          echo "| Create the server | $(( $(date +%s) - start )) |" >> "$RUNNER_TEMP/timings.md"
+
+      - name: Wait for SSH and the first boot
+        env:
+          SERVER_IP: ${{ steps.server.outputs.ip }}
+        run: |
+          set -euo pipefail
+          start=$(date +%s)
+          ssh_opts=(-i "$RUNNER_TEMP/e2e_key" -o BatchMode=yes -o ConnectTimeout=5
+                    -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$RUNNER_TEMP/known_hosts")
+          for _ in $(seq 1 60); do
+            if ssh "${ssh_opts[@]}" "root@${SERVER_IP}" true 2>/dev/null; then
+              ssh "${ssh_opts[@]}" "root@${SERVER_IP}" "cloud-init status --wait > /dev/null || true"
+              echo "| Wait for SSH and cloud-init | $(( $(date +%s) - start )) |" >> "$RUNNER_TEMP/timings.md"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::the test server did not accept SSH within 5 minutes"
+          exit 1
+
+      - name: Write the inventory (example group_vars, secrets in a file only this job reads)
+        env:
+          SERVER_IP: ${{ steps.server.outputs.ip }}
+          FXSERVER_LICENSE_KEY: ${{ secrets.FXSERVER_LICENSE_KEY }}
+        run: |
+          set -euo pipefail
+          cp -R examples/inventory "$RUNNER_TEMP/inventory"
+          cat > "$RUNNER_TEMP/inventory/hosts.yml" <<EOF
+          gameservers:
+            hosts:
+              e2e-server:
+                ansible_host: ${SERVER_IP}
+                ansible_user: root
+                ansible_ssh_private_key_file: $RUNNER_TEMP/e2e_key
+                ansible_ssh_common_args: >-
+                  -o UserKnownHostsFile=$RUNNER_TEMP/known_hosts -o StrictHostKeyChecking=yes
+          EOF
+          # Extra variables outrank the example's group_vars, including its placeholders. No
+          # default account: the run never logs in to txAdmin.
+          python3 - <<'EOF'
+          import json, os, secrets
+          values = {
+              "fxserver_license_key": os.environ["FXSERVER_LICENSE_KEY"],
+              "txadmin_api_token": secrets.token_hex(16),
+              "txadmin_default_account_name": "",
+              "txadmin_default_account_password_hash": "",
+              "txadmin_prometheus_basic_auth": {
+                  "enabled": True, "user": "prometheus", "password": secrets.token_hex(16)},
+          }
+          path = os.path.join(os.environ["RUNNER_TEMP"], "e2e-vars.json")
+          with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as fh:
+              json.dump(values, fh)
+          EOF
+
+      - name: Prepare the firewall layout of the base role on the server
+        run: |
+          set -euo pipefail
+          ansible-playbook -i "$RUNNER_TEMP/inventory" tests/e2e/prepare.yml
+
+      - name: Plain mode, two runs (the second must report changed=0)
+        run: |
+          set -euo pipefail
+          for run in 1 2; do
+            start=$(date +%s)
+            ansible-playbook -i "$RUNNER_TEMP/inventory" luminare.gameserver.gameserver \
+              -e "@$RUNNER_TEMP/e2e-vars.json" -e fxserver_mode=plain | tee "$RUNNER_TEMP/plain-${run}.log"
+            echo "| Plain mode, run ${run} | $(( $(date +%s) - start )) |" >> "$RUNNER_TEMP/timings.md"
+          done
+          grep -E '^e2e-server +: ok=[0-9]+ +changed=0 +unreachable=0 +failed=0 ' "$RUNNER_TEMP/plain-2.log"
+
+      - name: Plain mode, checks on the server and the game port from this runner
+        env:
+          SERVER_IP: ${{ steps.server.outputs.ip }}
+        run: |
+          set -euo pipefail
+          ansible-playbook -i "$RUNNER_TEMP/inventory" tests/e2e/check.yml -e e2e_mode=plain
+          curl -fsS --max-time 10 "http://${SERVER_IP}:30120/info.json" \
+            | jq -e '.server | test("[.]35245( |$)")'
+
+      - name: txAdmin mode (the example inventory as it is), two runs (the second must report changed=0)
+        run: |
+          set -euo pipefail
+          for run in 1 2; do
+            start=$(date +%s)
+            ansible-playbook -i "$RUNNER_TEMP/inventory" luminare.gameserver.gameserver \
+              -e "@$RUNNER_TEMP/e2e-vars.json" | tee "$RUNNER_TEMP/txadmin-${run}.log"
+            echo "| txAdmin mode, run ${run} | $(( $(date +%s) - start )) |" >> "$RUNNER_TEMP/timings.md"
+          done
+          grep -E '^e2e-server +: ok=[0-9]+ +changed=0 +unreachable=0 +failed=0 ' "$RUNNER_TEMP/txadmin-2.log"
+
+      - name: txAdmin mode, checks on the server and port 40120 closed from this runner
+        env:
+          SERVER_IP: ${{ steps.server.outputs.ip }}
+        run: |
+          set -euo pipefail
+          ansible-playbook -i "$RUNNER_TEMP/inventory" tests/e2e/check.yml -e e2e_mode=txadmin
+          # txAdmin listens on 0.0.0.0:40120 (check.yml); from here the connection must time out,
+          # because the nftables input policy drops it (the cloud firewall admits this runner).
+          [[ "${SERVER_IP}" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]
+          status=0
+          timeout 10 bash -c "exec 3<>/dev/tcp/${SERVER_IP}/40120" || status=$?
+          if [ "${status}" -ne 124 ]; then
+            echo "::error::port 40120 did not time out from outside (exit status ${status})"
+            exit 1
+          fi
+
+      - name: Write the timings to the job summary
+        if: ${{ always() }}
+        run: |
+          if [ -f "$RUNNER_TEMP/timings.md" ]; then
+            { echo "### End-to-end run (${SERVER_TYPE}, ${IMAGE}, ${LOCATION})"; echo;
+              cat "$RUNNER_TEMP/timings.md"; } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Delete the test server, its firewall and its SSH key
+        if: ${{ always() }}
+        env:
+          HCLOUD_TOKEN: ${{ secrets.HCLOUD_TOKEN }}
+        run: |
+          set -euo pipefail
+          rm -f "$RUNNER_TEMP/e2e-vars.json" "$RUNNER_TEMP/e2e_key"
+          if ! command -v hcloud > /dev/null || [ -z "${HCLOUD_TOKEN}" ]; then
+            echo "The hcloud CLI or the token is missing, so nothing was created."
+            exit 0
+          fi
+          # Every resource with the label, also any left over by an earlier run. The server goes
+          # first: a firewall that is still applied to a server cannot be deleted.
+          for kind in server firewall ssh-key; do
+            for id in $(hcloud "${kind}" list --selector "${E2E_LABEL}" -o noheader -o columns=id); do
+              hcloud "${kind}" delete "${id}"
+            done
+          done
+          left=0
+          for kind in server firewall ssh-key; do
+            count="$(hcloud "${kind}" list --selector "${E2E_LABEL}" -o noheader | wc -l)"
+            echo "${kind}: ${count} left"
+            left=$(( left + count ))
+          done
+          if [ "${left}" -ne 0 ]; then
+            echo "::error::resources with the label ${E2E_LABEL} are left; delete them by hand"
+            exit 1
+          fi

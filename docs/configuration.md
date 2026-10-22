@@ -4,6 +4,33 @@ Each role prefixes its variables with the role name, validates them with
 `roles/<role>/meta/argument_specs.yml` and documents them in a table in `roles/<role>/README.md`.
 Set them in your inventory (`group_vars/`, `host_vars/`) or in the play.
 
+## Playbook
+
+The playbook `luminare.gameserver.gameserver` ([`playbooks/gameserver.yml`](../playbooks/gameserver.yml))
+reads two variables of its own. Ansible evaluates a play's `hosts` and `serial` before it loads
+inventory variables, so pass them as extra variables (`-e`); in `group_vars` they have no effect.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `gameserver_hosts` | str | `gameservers` | Host pattern the play runs on. |
+| `gameserver_serial` | int or str | `1` | Hosts per batch (Ansible's `serial`, for example `2` or `"25%"`). The play stops at the first host that fails (`max_fail_percentage: 0`), so later hosts keep their build. |
+
+In txAdmin mode the playbook first checks the firewall layout with the txadmin role's rules; it
+reads `txadmin_firewall_required` (the check is skipped when it is `false`) and
+`txadmin_firewall_manage` (then `/etc/nftables.d` and `nft` may still be missing). Everything
+else comes from the role variables below. The example inventory
+[`examples/inventory/`](../examples/inventory/) sets them for one host in the group `gameservers`:
+
+| File | What it sets |
+|---|---|
+| `hosts.yml` | One host (`play.example.com`, `192.0.2.10`, documentation values) with a sudo user. |
+| `group_vars/gameservers/main.yml` | `fxserver_mode: txadmin`, a minimal `server.cfg` with a neutral name (`fxserver_cfg`), the nightly backup, and for txAdmin its public URL, slot limit, game, master account name and one firewall source. |
+| `group_vars/gameservers/secrets.yml` | `CHANGE_ME_` placeholders for the license key, the API token, the master account's bcrypt hash and the `/perf/` password. Replace them and encrypt the file. |
+
+The server build is the role default (build 35245 with its sha256); to pin another, set
+`fxserver_build`, `fxserver_artifact_url` and `fxserver_artifact_sha256` together
+([upgrade guide](upgrade.md#update)).
+
 ## fxserver
 
 The full table, with the keys of `fxserver_cfg`, is in the

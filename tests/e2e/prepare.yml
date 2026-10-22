@@ -1,0 +1,59 @@
+# The firewall layout of the luminare.infra_edge base role on a fresh test server: nftables with
+# input policy drop, SSH open, and /etc/nftables.d/*.nft included last, so that the playbook's
+# roles can add their drop-ins. Used by the end-to-end run (.github/workflows/e2e.yml) and by the
+# Molecule scenario roles/txadmin/molecule/playbook. It is test scaffolding, not a hardening role:
+# real hosts get this layout from the base role (or from your own firewall setup).
+- name: Prepare the firewall layout of the base role
+  hosts: gameservers
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Install nftables
+      ansible.builtin.apt:
+        name: nftables
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Create the drop-in directory /etc/nftables.d
+      ansible.builtin.file:
+        path: /etc/nftables.d
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Write /etc/nftables.conf (input policy drop, SSH open, drop-ins included last)
+      ansible.builtin.copy:
+        dest: /etc/nftables.conf
+        owner: root
+        group: root
+        mode: "0755"
+        validate: nft --check --file %s
+        content: |
+          #!/usr/sbin/nft -f
+          flush ruleset
+          table inet filter {
+            chain input {
+              type filter hook input priority filter; policy drop;
+              iif "lo" accept
+              ct state established,related accept
+              ct state invalid drop
+              meta l4proto { icmp, ipv6-icmp } accept
+              tcp dport 22 accept
+            }
+            chain forward {
+              type filter hook forward priority filter; policy drop;
+            }
+            chain output {
+              type filter hook output priority filter; policy accept;
+            }
+          }
+          include "/etc/nftables.d/*.nft"
+      register: e2e_nftables_conf
+
+    - name: Enable nftables.service and load the ruleset
+      ansible.builtin.systemd_service:
+        name: nftables.service
+        enabled: true
+        state: "{{ 'restarted' if e2e_nftables_conf is changed else 'started' }}"

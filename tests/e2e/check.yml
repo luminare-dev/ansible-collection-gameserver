@@ -1,0 +1,77 @@
+# Checks on the host after the playbook luminare.gameserver.gameserver, for one fxserver_mode:
+#
+#   ansible-playbook -i <inventory> tests/e2e/check.yml -e e2e_mode=plain     game server direct
+#   ansible-playbook -i <inventory> tests/e2e/check.yml -e e2e_mode=txadmin   under txAdmin
+#
+# plain: /info.json answers on the game port with the expected build. txadmin: txAdmin answers
+# on port 40120 and listens on every IPv4 address, and the loaded ruleset holds the drop-in for
+# that port, so that a closed port seen from outside (checked by the caller) comes from the
+# firewall and not from a missing listener. Used by the end-to-end run
+# (.github/workflows/e2e.yml) and by the Molecule scenario roles/txadmin/molecule/playbook.
+- name: Check the game server on the host
+  hosts: gameservers
+  become: true
+  gather_facts: false
+  vars:
+    e2e_build: 35245
+  tasks:
+    - name: Check the mode to test
+      ansible.builtin.assert:
+        that:
+          - e2e_mode | default('') in ['plain', 'txadmin']
+        fail_msg: Set e2e_mode to plain or txadmin.
+        quiet: true
+
+    - name: Read the state of fxserver.service
+      ansible.builtin.systemd_service:
+        name: fxserver.service
+      register: e2e_service
+
+    - name: Check that fxserver.service is enabled and running
+      ansible.builtin.assert:
+        that:
+          - e2e_service.status.ActiveState == 'active'
+          - e2e_service.status.UnitFileState == 'enabled'
+        quiet: true
+
+    - name: Query /info.json on the game port
+      ansible.builtin.uri:
+        url: http://127.0.0.1:30120/info.json
+        return_content: true
+      register: e2e_info
+      when: e2e_mode == 'plain'
+
+    - name: Check the build that answers
+      ansible.builtin.assert:
+        that:
+          - e2e_info.json.server is search('[.]' ~ e2e_build ~ '( |$)')
+        fail_msg: "/info.json names {{ e2e_info.json.server | default('no server') }}, expected build {{ e2e_build }}."
+      when: e2e_mode == 'plain'
+
+    - name: Query txAdmin's web page
+      ansible.builtin.uri:
+        url: http://127.0.0.1:40120/
+      when: e2e_mode == 'txadmin'
+
+    - name: Read the listening TCP sockets
+      ansible.builtin.command:
+        argv: [ss, --listening, --tcp, --numeric, --no-header]
+      register: e2e_sockets
+      changed_when: false
+      when: e2e_mode == 'txadmin'
+
+    - name: Read the loaded input chain
+      ansible.builtin.command:
+        argv: [nft, list, chain, inet, filter, input]
+      register: e2e_chain
+      changed_when: false
+      when: e2e_mode == 'txadmin'
+
+    - name: Check that txAdmin listens on every IPv4 address and the drop-in for its port is loaded
+      ansible.builtin.assert:
+        that:
+          - e2e_sockets.stdout is search('0[.]0[.]0[.]0:40120 ')
+          - e2e_chain.stdout is search('policy drop;')
+          - e2e_chain.stdout is search('iif "lo" tcp dport 40120 accept')
+          - e2e_chain.stdout is not search('ip saddr 0[.]0[.]0[.]0/0 tcp dport 40120')
+      when: e2e_mode == 'txadmin'

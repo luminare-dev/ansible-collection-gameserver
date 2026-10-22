@@ -1,0 +1,30 @@
+# Settings of the example game server. Every variable is described in roles/fxserver/README.md,
+# roles/txadmin/README.md and docs/configuration.md. The server build is the role default
+# (Recommended build 35245 with its sha256); to pin another one, set fxserver_build,
+# fxserver_artifact_url and fxserver_artifact_sha256 together (docs/upgrade.md).
+
+# Run txAdmin, which starts the game server after its one-time web setup; the playbook then also
+# runs the txadmin role. "plain" starts the game server directly with server.cfg instead.
+fxserver_mode: txadmin
+
+# A minimal server.cfg (no server-data repository). A server with a valid license key is in the
+# public server list unless it runs LAN-only (lan: true, which writes sv_lan true), so keep the
+# name and description neutral.
+fxserver_cfg:
+  hostname: Private test server
+  project_name: Private test server
+  project_desc: Private test server.
+  max_clients: 32
+
+# Back up server-data and txData every night as well, not only before every build switch.
+fxserver_backup_timer_enabled: true
+
+# txAdmin: the address of the panel behind your tunnel, the slot limit and the master account
+# (its password hash is in secrets.yml). Port 40120 stays closed except for loopback and
+# 192.0.2.20, which stands for the host that runs the tunnel connector.
+txadmin_public_url: https://demo-tx.example.com
+txadmin_max_slots: 32
+txadmin_game_name: fivem
+txadmin_default_account_name: admin_name
+txadmin_firewall_sources:
+  - 192.0.2.20

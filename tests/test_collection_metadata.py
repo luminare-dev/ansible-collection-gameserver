@@ -8,6 +8,7 @@ names. PyYAML comes with requirements-test.txt (and requirements-dev.txt).
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import re
 import unittest
@@ -66,8 +67,15 @@ class GalaxyMetadataTest(unittest.TestCase):
         ignored = set(self.galaxy["build_ignore"])
         required = {"docs/brand", "scripts", ".github", "dist", "tests/test_*.py", "*.tar.gz",
                     ".forbidden-words-allow", "requirements-*.txt", ".venv", "molecule", "roles/*/molecule",
-                    "tests/fake-artifact"}
+                    "tests/fake-artifact", "tests/e2e"}
         self.assertEqual(required - ignored, set())
+
+    def test_build_keeps_the_playbook_and_the_example_inventory(self):
+        """luminare.gameserver.gameserver and the inventory it is documented with ship in the tarball."""
+        ignored = self.galaxy["build_ignore"]
+        for path in ("playbooks", "playbooks/gameserver.yml", "examples", "examples/inventory/hosts.yml"):
+            with self.subTest(path=path):
+                self.assertFalse(any(fnmatch.fnmatch(path, pattern) for pattern in ignored))
 
     def test_requires_ansible(self):
         runtime = load_yaml("meta/runtime.yml")
