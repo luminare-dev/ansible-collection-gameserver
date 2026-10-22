@@ -3,7 +3,7 @@
 # release-please-config.json); it stays equal to version.txt.
 namespace: luminare
 name: gameserver
-version: 0.1.0 # x-release-please-version
+version: 0.2.0 # x-release-please-version
 readme: README.md
 authors:
   - Luminare Development <oss@luminare.tech>

@@ -8,6 +8,13 @@ the Conventional Commit titles of the merged pull requests; do not edit entries 
 <!-- release-please inserts each new release above the first line that starts with "## ["
      (or "## " and a digit). Keep the "Origin" entry below as the last entry of this file. -->
 
+## [0.2.0](https://github.com/luminare-dev/ansible-collection-gameserver/compare/v0.1.0...v0.2.0) (2026-10-22)
+
+
+### Added
+
+* **gameserver_observability:** add the role that wires the observability pack ([#8](https://github.com/luminare-dev/ansible-collection-gameserver/issues/8)) ([a815c3c](https://github.com/luminare-dev/ansible-collection-gameserver/commit/a815c3c4f3e7126e1970c234b169aafb1c2b299e))
+
 ## 0.1.0 (2026-10-22)
 
 

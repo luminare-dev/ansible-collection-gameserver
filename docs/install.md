@@ -24,7 +24,7 @@ From a release tag:
 
 <!-- x-release-please-start-version -->
 ```bash
-ansible-galaxy collection install git+https://github.com/luminare-dev/ansible-collection-gameserver.git,v0.1.0
+ansible-galaxy collection install git+https://github.com/luminare-dev/ansible-collection-gameserver.git,v0.2.0
 ```
 <!-- x-release-please-end -->
 
@@ -36,7 +36,7 @@ Or pin it in a `requirements.yml` and install with
 collections:
   - name: https://github.com/luminare-dev/ansible-collection-gameserver.git
     type: git
-    version: v0.1.0
+    version: v0.2.0
 ```
 <!-- x-release-please-end -->
 
@@ -44,10 +44,10 @@ Or from the release files (the collection tarball and `SHA256SUMS`):
 
 <!-- x-release-please-start-version -->
 ```bash
-gh release download v0.1.0 --repo luminare-dev/ansible-collection-gameserver \
+gh release download v0.2.0 --repo luminare-dev/ansible-collection-gameserver \
   --pattern 'luminare-gameserver-*.tar.gz' --pattern SHA256SUMS
 sha256sum -c --ignore-missing SHA256SUMS
-ansible-galaxy collection install luminare-gameserver-0.1.0.tar.gz
+ansible-galaxy collection install luminare-gameserver-0.2.0.tar.gz
 ```
 <!-- x-release-please-end -->
 
