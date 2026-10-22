@@ -24,6 +24,12 @@
     { "type": "chore", "section": "Maintenance", "hidden": true }
   ],
   "packages": {
-    ".": {}
+    ".": {
+      "extra-files": [
+        { "type": "generic", "path": "galaxy.yml" },
+        { "type": "generic", "path": "README.md" },
+        { "type": "generic", "path": "docs/install.md" }
+      ]
+    }
   }
 }

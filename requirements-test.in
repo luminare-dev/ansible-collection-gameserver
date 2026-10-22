@@ -1,0 +1,22 @@
+# Python tools for this collection's tests: ansible-lint, Molecule with the docker driver, and
+# ansible-galaxy for the release tarball. The compiled, hash-pinned list is requirements-test.txt.
+#
+# Compile with Python 3.12 (the python3 of GitHub's ubuntu-24.04 runner), for example:
+#   docker run --rm -v "$PWD:/src" -w /src python:3.12-slim sh -c \
+#     'pip install --quiet pip-tools==7.5.2 click==8.2.1 && pip-compile --allow-unsafe \
+#      --generate-hashes --output-file=requirements-test.txt --strip-extras requirements-test.in'
+# The pip-compile line is the one in the header of requirements-test.txt. click stays at 8.2.1
+# because pip-tools 7.5.2 with a newer click (8.5.0 checked on 2026-10-21) writes a --no-index
+# that was never given into that header, and the header line then fails when it is run again.
+#
+# yamllint, pyyaml and pathspec are kept equal to requirements-dev.txt, so that both tool sets
+# lint YAML with the same versions: yamllint --strict in the lint-test job uses
+# requirements-dev.txt, and ansible-lint (scripts/test.sh), which runs yamllint's rules, uses this
+# file. They are installed into separate virtual environments.
+ansible-core==2.21.5
+ansible-lint==26.10.1
+molecule==26.10.0
+molecule-plugins[docker]==26.10.12
+yamllint==1.38.0
+pyyaml==6.0.3
+pathspec==1.1.1

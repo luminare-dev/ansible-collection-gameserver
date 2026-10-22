@@ -2,8 +2,12 @@
 __pycache__/
 *.pyc
 .venv/
-# Release build output (scripts/package_release.py)
+# Release build output (scripts/package_release.py, ansible-galaxy collection build)
 dist/
+/luminare-gameserver-*.tar.gz
+# ansible-lint and Molecule caches
+.ansible/
+.cache/
 # Local tool installs
 node_modules/
 # Never commit environment files or server configs with keys
