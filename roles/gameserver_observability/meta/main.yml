@@ -1,0 +1,22 @@
+galaxy_info:
+  author: Luminare Development
+  description: >-
+    Wire game servers (FXServer) into an existing Prometheus with the gameserver-observability pack:
+    pinned exporters, scrape jobs, rules, /perf/ basic auth and an optional dashboard
+  license: Apache-2.0
+  min_ansible_version: "2.21"
+  platforms:
+    - name: Debian
+      versions:
+        - trixie
+    - name: Ubuntu
+      versions:
+        - noble
+  galaxy_tags:
+    - gameserver
+    - fxserver
+    - prometheus
+    - monitoring
+# The Prometheus this role adds to is installed beforehand (for example with the prometheus role
+# of the prometheus.prometheus collection or a distribution package); it is not a dependency.
+dependencies: []

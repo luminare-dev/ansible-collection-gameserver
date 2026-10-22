@@ -1,8 +1,10 @@
 # Runbook
 
-The first entries cover the `fxserver` and `txadmin` roles on a managed host; the last three cover
-the automation in this repository (the weekly Molecule run, the end-to-end run and the release).
-Commands run as root on the host.
+The first entries cover the `fxserver`, `txadmin` and `gameserver_observability` roles on a
+managed host; the last three cover the automation in this repository (the weekly Molecule run,
+the end-to-end run and the release). Commands run as root on the host. The alerts of the
+observability pack have their own runbook in the
+[pack's repository](https://github.com/luminare-dev/gameserver-observability/blob/main/docs/runbook.md).
 
 ## Failure: a playbook run stops with "did not answer … rolled back to build …"
 
@@ -63,6 +65,26 @@ Commands run as root on the host.
 | **Diagnosis** | `journalctl -u fxserver -n 100`. txAdmin stops at boot when a `TXHOST_*` value is invalid; its error names the variable and can print the value, so treat that log as secret and never paste it unredacted. `ss -ltnp 'sport = :40120'` shows whether another process holds the port. |
 | **Mitigation** | Revert the last change of the `txadmin_*` variables in the inventory and run the playbook. On the host, `rm /etc/systemd/system/fxserver.service.d/10-txadmin.conf && systemctl daemon-reload && systemctl restart fxserver` starts txAdmin with its defaults (port 40120, still behind the nftables drop-in) until the next run. |
 | **Fix** | Correct the variable. If a newer txAdmin changed its rules, see the [upgrade guide](upgrade.md#under-txadmin). |
+
+## Failure: the gameserver_observability role says "Prometheus … did not load …"
+
+| | |
+|---|---|
+| **Meaning** | The role wrote its scrape jobs and rule files, `promtool check config` passed and Prometheus was reloaded, but within about two minutes Prometheus' API did not list the named scrape job for a game server (`fxserver_json/game-01`, for example) or the named rule file. |
+| **Impact** | Prometheus does not collect those metrics or evaluate those rules: the dashboard shows gaps and the alerts of that game server stay silent. |
+| **Diagnosis** | `grep -n -A3 -e scrape_config_files -e rule_files /etc/prometheus/prometheus.yml` shows whether it includes `/etc/prometheus/scrape_configs/*.yml` and `/etc/prometheus/rules/*.yml` (or `scrape_configs/*` relative to the file, as the `prometheus.prometheus` role writes it). `journalctl -u prometheus -n 50` shows a failed reload ("Error reloading config"). `curl -fsS http://127.0.0.1:9090/api/v1/status/config` shows the configuration Prometheus runs with. |
+| **Mitigation** | Nothing is lost on the game servers; they keep running. The role's files are in place, so a corrected `prometheus.yml` and `systemctl reload prometheus` take effect at once. |
+| **Fix** | Add the two include lines to `prometheus.yml` (in the source that manages it, for example `prometheus_scrape_config_files` and `prometheus_alert_rules_files` of the `prometheus.prometheus` role), or set `gameserver_observability_prometheus_config_dir` to the folder Prometheus includes, and run the playbook again. |
+
+## Failure: an exporter of the gameserver_observability role does not run
+
+| | |
+|---|---|
+| **Meaning** | `gameserver-observability-json-exporter.service` or `gameserver-observability-blackbox-exporter.service` is failed or restarting, or the role says it did not answer. |
+| **Impact** | Prometheus marks the `fxserver_json` or `fxserver_blackbox` targets down, and after 10 minutes the pack's `FXServerTargetDown` alert fires; `/perf/` is still scraped directly. |
+| **Diagnosis** | `systemctl status gameserver-observability-json-exporter` and `journalctl -u gameserver-observability-json-exporter -n 50` (or `…-blackbox-exporter`). Common causes: the listen address is not on this host any more (`ip -br address`), another process holds the port (`ss -ltnp 'sport = :7979'`), or the module file was edited by hand. |
+| **Mitigation** | `systemctl restart gameserver-observability-json-exporter` after the cause is gone. |
+| **Fix** | Correct `gameserver_observability_listen_address` or the ports in the inventory and run the playbook; it rewrites the module files and units from the vendored pack. |
 
 ## Failure: the `molecule` check is red
 

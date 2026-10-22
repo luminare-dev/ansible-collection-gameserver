@@ -1,0 +1,23 @@
+# Prometheus reads the new scrape jobs, rules and password file on a reload (SIGHUP through the
+# unit's ExecReload). check.yml flushes the handlers and then checks what Prometheus loaded.
+- name: Reload Prometheus for gameserver-observability
+  ansible.builtin.systemd_service:
+    name: "{{ gameserver_observability_prometheus_service }}"
+    state: reloaded
+  when: gameserver_observability_prometheus_reload | bool
+
+# Grafana reads a new or changed provider file only at its start. Only a running Grafana is
+# restarted, so a Grafana stopped on purpose stays stopped.
+- name: Restart Grafana for gameserver-observability
+  ansible.builtin.systemd_service:
+    name: "{{ gameserver_observability_grafana_service }}"
+    state: restarted
+  when: __gameserver_observability_grafana_status.status.ActiveState | default('inactive') == 'active'
+
+# Loads /etc/nftables.conf with the new drop-in. Disable with gameserver_observability_firewall_reload:
+# false when another tool loads the ruleset (the drop-in is validated either way).
+- name: Reload nftables for gameserver-observability
+  ansible.builtin.systemd_service:
+    name: nftables.service
+    state: restarted
+  when: gameserver_observability_firewall_reload | bool

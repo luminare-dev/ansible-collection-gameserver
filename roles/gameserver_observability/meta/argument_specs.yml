@@ -1,0 +1,196 @@
+argument_specs:
+  main:
+    short_description: Wire game servers (FXServer) into an existing Prometheus
+    description:
+      - Installs json_exporter and blackbox_exporter from their official release archives, checked
+        against pinned sha256 values, as hardened systemd services on loopback or a private
+        address, with the exporter modules of the vendored gameserver-observability pack.
+      - Writes the pack's scrape jobs for the game servers in gameserver_observability_targets,
+        its recording and alerting rules and the /perf/ password file (password_file) into the
+        configuration folder of an existing Prometheus, checks them with promtool, reloads
+        Prometheus and checks that it loaded the jobs and rules.
+      - Optionally adds the pack's dashboard to an existing Grafana through provisioning files, and
+        writes the nftables drop-in 50-observability.nft for the exporter ports.
+      - Never reads players.json; the pack collects counts only.
+    author:
+      - Luminare Development
+    options:
+      gameserver_observability_targets:
+        type: list
+        elements: dict
+        default:
+          - server: game-01
+            address: 127.0.0.1
+            port: 30120
+        description:
+          - Game servers to watch, one entry each. The server label is the name the dashboard and
+            the alerts show; address is how Prometheus reaches the game port (a host name, or an
+            IPv4 or IPv6 address); port is the game port.
+          - Reach game servers on other hosts over a private network or a tunnel only, because
+            /perf/ sends its basic auth in plain HTTP.
+        options:
+          server:
+            type: str
+            required: true
+            description: Value of the server label (letters, digits, ".", "_" and "-"); unique.
+          address:
+            type: str
+            required: true
+            description: Host name or IP address of the game server, as seen from this host.
+          port:
+            type: int
+            default: 30120
+            description: Game port (FXServer HTTP endpoints and /perf/).
+      gameserver_observability_perf_user:
+        type: str
+        default: prometheus
+        description: /perf/ basic auth user, equal to sv_prometheusBasicAuthUser on the game servers.
+      gameserver_observability_perf_password:
+        type: str
+        default: ""
+        no_log: true
+        description:
+          - /perf/ basic auth password, equal to sv_prometheusBasicAuthPassword on the game servers;
+            secret, required, at least 24 characters without spaces or quotes.
+          - Written to <config dir>/secrets/fxserver_perf (root, group of Prometheus, 0640) and read
+            by Prometheus through password_file.
+      gameserver_observability_admin_probes:
+        type: list
+        elements: dict
+        default: []
+        description:
+          - Admin hostnames behind an access-protected tunnel to probe (job fxserver_tunnel); a
+            request without a login must be redirected or refused.
+        options:
+          server:
+            type: str
+            required: true
+            description: Server label of the game server the hostname belongs to.
+          url:
+            type: str
+            required: true
+            description: HTTPS URL of the hostname, for example https://demo-tx.example.com/.
+      gameserver_observability_versions_job:
+        type: bool
+        default: false
+        description:
+          - Adds the job fxserver_versions, which reads the platform's public version list for the
+            alert FXServerBuildBehindRecommended; json_exporter then needs outbound HTTPS.
+      gameserver_observability_listen_address:
+        type: str
+        default: 127.0.0.1
+        description:
+          - Address both exporters listen on; loopback or a private address (RFC 1918, RFC 6598 or
+            IPv6 unique local), never 0.0.0.0 or a public address.
+      gameserver_observability_json_exporter_port:
+        type: int
+        default: 7979
+        description: Port of json_exporter.
+      gameserver_observability_json_exporter_version:
+        type: str
+        default: "0.8.0"
+        description: json_exporter release; set its sha256 with it.
+      gameserver_observability_json_exporter_sha256:
+        type: str
+        default: bd25fe58f62cec131b2ecbe859358990bb07f0266439ddcdef501fdd182a4fe1
+        description: sha256 of json_exporter-<version>.linux-amd64.tar.gz (the release's sha256sums.txt).
+      gameserver_observability_blackbox_exporter_port:
+        type: int
+        default: 9115
+        description: Port of blackbox_exporter.
+      gameserver_observability_blackbox_exporter_version:
+        type: str
+        default: "0.29.0"
+        description: blackbox_exporter release; set its sha256 with it.
+      gameserver_observability_blackbox_exporter_sha256:
+        type: str
+        default: 5512929259bb6164f68ebe20ce433ec43b8609e3a79c95324f5020e931488fb4
+        description: sha256 of blackbox_exporter-<version>.linux-amd64.tar.gz (the release's sha256sums.txt).
+      gameserver_observability_prometheus_config_dir:
+        type: path
+        default: /etc/prometheus
+        description:
+          - Configuration folder of the existing Prometheus. The role writes
+            scrape_configs/gameserver-observability.yml, rules/gameserver-observability-*.yml and
+            secrets/fxserver_perf below it; prometheus.yml must include the first two.
+      gameserver_observability_prometheus_config_file:
+        type: path
+        default: "{{ gameserver_observability_prometheus_config_dir }}/prometheus.yml"
+        description: Main configuration file of Prometheus; checked with promtool after every change.
+      gameserver_observability_prometheus_group:
+        type: str
+        default: prometheus
+        description: Group Prometheus runs as; it may read the /perf/ password file.
+      gameserver_observability_prometheus_service:
+        type: str
+        default: prometheus.service
+        description: systemd unit of Prometheus, reloaded after a change.
+      gameserver_observability_prometheus_reload:
+        type: bool
+        default: true
+        description: Reload Prometheus after a change; false leaves it to you.
+      gameserver_observability_prometheus_url:
+        type: str
+        default: http://127.0.0.1:9090
+        description:
+          - URL of Prometheus' web API, used to check that the jobs and rules are loaded; "" skips
+            the check.
+      gameserver_observability_promtool:
+        type: str
+        default: promtool
+        description: promtool command (name in the PATH, or a path) of the Prometheus release in use.
+      gameserver_observability_rule_files:
+        type: list
+        elements: str
+        default:
+          - fxserver.recording.yml
+          - fxserver.alerts.yml
+          - build.alerts.yml
+          - host.alerts.yml
+          - mariadb.alerts.yml
+        description:
+          - Rule files of the pack to install; the others are removed. fxserver.alerts.yml needs
+            fxserver.recording.yml. Rules without data stay silent.
+        choices:
+          - fxserver.recording.yml
+          - fxserver.alerts.yml
+          - build.alerts.yml
+          - host.alerts.yml
+          - mariadb.alerts.yml
+      gameserver_observability_grafana_dashboards:
+        type: bool
+        default: false
+        description:
+          - Adds the pack's dashboard "Game server overview" to an existing Grafana on this host
+            with a dashboard provider file and the dashboard JSON; a running Grafana is restarted
+            when the provider file changes.
+      gameserver_observability_grafana_provisioning_dir:
+        type: path
+        default: /etc/grafana/provisioning
+        description: Grafana's provisioning folder; must exist when the dashboards are enabled.
+      gameserver_observability_grafana_dashboards_dir:
+        type: path
+        default: /var/lib/grafana/dashboards/gameserver-observability
+        description: Folder for the dashboard JSON, read by the provider file.
+      gameserver_observability_grafana_service:
+        type: str
+        default: grafana-server.service
+        description: systemd unit of Grafana; restarted only when it runs.
+      gameserver_observability_firewall_manage:
+        type: bool
+        default: false
+        description:
+          - false writes /etc/nftables.d/50-observability.nft only when /etc/nftables.d exists;
+            true also creates the directory and installs nftables.
+      gameserver_observability_firewall_reload:
+        type: bool
+        default: true
+        description: Restart nftables.service after the drop-in changed.
+      gameserver_observability_firewall_sources:
+        type: list
+        elements: str
+        default: []
+        description:
+          - IPv4 or IPv6 addresses or networks that may reach both exporter ports (for example a
+            second Prometheus). Needs a private, not a loopback, listen address; /0 networks are
+            refused.

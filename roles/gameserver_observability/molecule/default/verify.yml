@@ -1,0 +1,546 @@
+- name: Verify
+  hosts: all
+  # Facts for the container's private address (target game-02 and the exporters' listen address).
+  gather_facts: true
+  vars:
+    api: http://127.0.0.1:9090/api/v1
+    private_ip: "{{ ansible_facts['default_ipv4']['address'] }}"
+    manifest: >-
+      {{ lookup('ansible.builtin.file', lookup('ansible.builtin.env', 'MOLECULE_PROJECT_DIRECTORY')
+         ~ '/files/pack/manifest.json') | from_json }}
+    units:
+      - gameserver-observability-json-exporter.service
+      - gameserver-observability-blackbox-exporter.service
+    # Release archive in the role's cache -> the pinned sha256 (the role defaults).
+    archives:
+      /var/cache/gameserver-observability/json_exporter-0.8.0.linux-amd64.tar.gz: >-
+        bd25fe58f62cec131b2ecbe859358990bb07f0266439ddcdef501fdd182a4fe1
+      /var/cache/gameserver-observability/blackbox_exporter-0.29.0.linux-amd64.tar.gz: >-
+        5512929259bb6164f68ebe20ce433ec43b8609e3a79c95324f5020e931488fb4
+    # Installed path -> path of the vendored file (files/pack/): the bytes must be the same.
+    installed:
+      /etc/gameserver-observability/json_exporter.yml: json_exporter/config.yml
+      /etc/gameserver-observability/blackbox.yml: blackbox/blackbox.yml
+      /etc/prometheus/rules/gameserver-observability-fxserver.recording.yml: rules/fxserver.recording.yml
+      /etc/prometheus/rules/gameserver-observability-fxserver.alerts.yml: rules/fxserver.alerts.yml
+      /etc/prometheus/rules/gameserver-observability-build.alerts.yml: rules/build.alerts.yml
+      /etc/prometheus/rules/gameserver-observability-host.alerts.yml: rules/host.alerts.yml
+      /etc/prometheus/rules/gameserver-observability-mariadb.alerts.yml: rules/mariadb.alerts.yml
+      /var/lib/grafana/dashboards/gameserver-observability/game-server-overview.json: >-
+        grafana/dashboards/game-server-overview.json
+    scrape_file: /etc/prometheus/scrape_configs/gameserver-observability.yml
+    password_file: /etc/prometheus/secrets/fxserver_perf
+    expected_jobs: [fxserver_perf, fxserver_json, fxserver_blackbox, fxserver_tunnel]
+    expected_nft:
+      - add rule inet filter input ip saddr { 198.51.100.0/24 } tcp dport 7979 accept
+      - add rule inet filter input ip6 saddr { 2001:db8::/32 } tcp dport 7979 accept
+      - add rule inet filter input ip saddr { 198.51.100.0/24 } tcp dport 9115 accept
+      - add rule inet filter input ip6 saddr { 2001:db8::/32 } tcp dport 9115 accept
+    # The pack's series of a game server (docs/metrics.md of the pack), without the optional
+    # version list.
+    expected_metrics:
+      - fxserver_clients
+      - fxserver_info
+      - fxserver_max_clients
+      - fxserver_onesync_enabled
+      - fxserver_tick_time_seconds_bucket
+      - fxserver_tick_time_seconds_count
+      - fxserver_tick_time_seconds_sum
+    # Label names that would tie a series to a player (the fake's players.json has all of them).
+    player_labels: [name, identifier, identifiers, license, ip, endpoint, player, players, ping, id]
+    # 2 game servers: fxserver_perf 2, fxserver_json 4, fxserver_blackbox 6, plus 1 fxserver_tunnel.
+    expected_targets: 13
+    # PromQL selectors and queries, URL-encoded where they are used.
+    pack_jobs: '{job=~"fxserver_.+"}'
+    q_up: 'up{job=~"fxserver_.+"}'
+    q_probes: 'probe_success{job="fxserver_blackbox"}'
+    q_series: 'count by (__name__, server) ({__name__=~"fxserver_.+"})'
+    q_recorded: 'server_thread:fxserver_tick_time_seconds:p95_1m{thread="svMain"}'
+    q_outages: 'ALERTS{alertname=~"FXServerDown|FXServerTargetDown|FXServerPerfEndpointExposed"}'
+    # Files a refused run must leave as they are.
+    refused_watch:
+      - "{{ scrape_file }}"
+      - "{{ password_file }}"
+      - /etc/nftables.d/50-observability.nft
+      - /etc/gameserver-observability/json_exporter.yml
+      - /etc/systemd/system/gameserver-observability-json-exporter.service
+      - /etc/systemd/system/gameserver-observability-blackbox-exporter.service
+  tasks:
+    - name: Read the exporter units
+      ansible.builtin.systemd_service:
+        name: "{{ item }}"
+      loop: "{{ units }}"
+      register: gameserver_observability_test_units
+
+    - name: Check that both exporters run, start at boot and are hardened
+      ansible.builtin.assert:
+        that:
+          - item.status.ActiveState == 'active'
+          - item.status.UnitFileState == 'enabled'
+          - item.status.DynamicUser == 'yes'
+          - item.status.NoNewPrivileges == 'yes'
+          - item.status.ProtectSystem == 'strict'
+          - item.status.ExecStart is search('/usr/local/lib/gameserver-observability/')
+          - item.status.ExecStart is search('--web.listen-address=' ~ private_ip ~ ':')
+      loop: "{{ gameserver_observability_test_units.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Read the release archives in the cache
+      ansible.builtin.stat:
+        path: "{{ item.key }}"
+        checksum_algorithm: sha256
+      loop: "{{ archives | dict2items }}"
+      loop_control:
+        label: "{{ item.key }}"
+      register: gameserver_observability_test_archives
+
+    - name: Check the archives against the pinned sha256 (one version of each exporter on disk)
+      ansible.builtin.assert:
+        that:
+          - item.stat.checksum | default('') == item.item.value
+      loop: "{{ gameserver_observability_test_archives.results }}"
+      loop_control:
+        label: "{{ item.item.key }}"
+
+    - name: Connect to the exporters on the private address
+      ansible.builtin.uri:
+        url: http://{{ private_ip }}:{{ item }}/
+        status_code: 200
+      loop: [7979, 9115]
+
+    - name: Connect to the exporters on loopback (nothing listens there)
+      ansible.builtin.uri:
+        url: http://127.0.0.1:{{ item }}/
+        timeout: 5
+      register: gameserver_observability_test_loopback
+      failed_when: gameserver_observability_test_loopback.status | default(0) != -1
+      loop: [7979, 9115]
+
+    - name: Read the installed pack files
+      ansible.builtin.stat:
+        path: "{{ item.key }}"
+        checksum_algorithm: sha256
+      loop: "{{ installed | dict2items }}"
+      loop_control:
+        label: "{{ item.key }}"
+      register: gameserver_observability_test_installed
+
+    - name: Check that every installed pack file is the vendored file (sha256 of the manifest)
+      ansible.builtin.assert:
+        that:
+          - item.stat.exists
+          - item.stat.checksum == manifest.files[item.item.value]
+          - item.stat.pw_name == 'root' and item.stat.mode == '0644'
+      loop: "{{ gameserver_observability_test_installed.results }}"
+      loop_control:
+        label: "{{ item.item.key }}"
+
+    - name: Read the password file
+      ansible.builtin.stat:
+        path: "{{ password_file }}"
+      register: gameserver_observability_test_password_stat
+
+    - name: Read the password
+      ansible.builtin.slurp:
+        src: "{{ password_file }}"
+      register: gameserver_observability_test_password
+      no_log: true
+
+    - name: Check the password file (root, group prometheus, 0640, the password and a newline)
+      ansible.builtin.assert:
+        that:
+          - gameserver_observability_test_password_stat.stat.pw_name == 'root'
+          - gameserver_observability_test_password_stat.stat.gr_name == 'prometheus'
+          - gameserver_observability_test_password_stat.stat.mode == '0640'
+          - >-
+            gameserver_observability_test_password.content | b64decode
+            == gameserver_observability_perf_password ~ '\n'
+        quiet: true
+
+    - name: Read the scrape jobs
+      ansible.builtin.slurp:
+        src: "{{ scrape_file }}"
+      register: gameserver_observability_test_scrape
+
+    - name: Check the scrape jobs (four jobs, both servers, the password file, never players.json)
+      vars:
+        text: "{{ gameserver_observability_test_scrape.content | b64decode }}"
+        jobs: "{{ (text | from_yaml).scrape_configs }}"
+        perf: "{{ jobs | selectattr('job_name', 'eq', 'fxserver_perf') | first }}"
+        json_targets: >-
+          {{ (jobs | selectattr('job_name', 'eq', 'fxserver_json') | first).static_configs
+             | map(attribute='targets') | flatten }}
+      ansible.builtin.assert:
+        that:
+          - jobs | map(attribute='job_name') | list == expected_jobs
+          - "perf.basic_auth == {'username': 'prometheus', 'password_file': password_file}"
+          - perf.static_configs | map(attribute='targets') | flatten == ['127.0.0.1:30120', private_ip ~ ':30120']
+          - perf.static_configs | map(attribute='labels.server') | list == ['game-01', 'game-02']
+          - >-
+            json_targets | map('regex_search', '/[a-z]+[.]json$') | unique | sort
+            == ['/dynamic.json', '/info.json']
+          - text is not search('players[.]json"')
+          - text is not search('/players')
+
+    - name: Read the nftables drop-in
+      ansible.builtin.slurp:
+        src: /etc/nftables.d/50-observability.nft
+      register: gameserver_observability_test_nft
+
+    - name: Check the drop-in (the exporter ports for the listed sources, accept rules only)
+      vars:
+        lines: "{{ gameserver_observability_test_nft.content | b64decode | split('\n') }}"
+      ansible.builtin.assert:
+        that:
+          - lines | select('match', '^add ') | list == expected_nft
+          - lines | reject('match', '^(add rule inet filter input .* accept|#.*|)$') | list | length == 0
+
+    - name: Check the drop-in together with /etc/nftables.conf
+      ansible.builtin.command:
+        argv: [nft, --check, --file, /etc/nftables.conf]
+      changed_when: false
+
+    - name: Wait until Prometheus scrapes every target of the pack (up == 1)
+      ansible.builtin.uri:
+        url: "{{ api }}/query?query={{ q_up | urlencode }}"
+        return_content: true
+      register: gameserver_observability_test_up
+      until: >-
+        gameserver_observability_test_up.json.data.result | default([]) | length == expected_targets
+        and gameserver_observability_test_up.json.data.result | map(attribute='value') | map('last')
+            | unique | list == ['1']
+      retries: 30
+      delay: 5
+
+    - name: Check the probes (game port, info.json and /perf/ refused without credentials)
+      ansible.builtin.uri:
+        url: "{{ api }}/query?query={{ q_probes | urlencode }}"
+        return_content: true
+      register: gameserver_observability_test_probes
+      until: >-
+        gameserver_observability_test_probes.json.data.result | length == 6
+        and gameserver_observability_test_probes.json.data.result | map(attribute='value') | map('last')
+            | unique | list == ['1']
+      retries: 12
+      delay: 5
+
+    - name: Read the fxserver_* series per server
+      ansible.builtin.uri:
+        url: "{{ api }}/query?query={{ q_series | urlencode }}"
+        return_content: true
+      register: gameserver_observability_test_series
+      until: >-
+        gameserver_observability_test_series.json.data.result | default([]) | map(attribute='metric.__name__')
+        | unique | sort == expected_metrics
+      retries: 12
+      delay: 5
+
+    - name: Check that both servers have every series
+      vars:
+        found: "{{ gameserver_observability_test_series.json.data.result | map(attribute='metric') | list }}"
+      ansible.builtin.assert:
+        that:
+          - found | selectattr('server', 'eq', 'game-01') | map(attribute='__name__') | sort == expected_metrics
+          - found | selectattr('server', 'eq', 'game-02') | map(attribute='__name__') | sort == expected_metrics
+
+    - name: Read the player count, the slots, the build and the threads
+      ansible.builtin.uri:
+        url: "{{ api }}/query?query={{ item | urlencode }}"
+        return_content: true
+      loop:
+        - fxserver_clients
+        - fxserver_max_clients
+        - fxserver_info
+        - count by (thread) (fxserver_tick_time_seconds_count)
+      register: gameserver_observability_test_values
+
+    - name: Check the values of the fake server (3 synthetic players, 48 slots, build 35245)
+      vars:
+        results: "{{ gameserver_observability_test_values.results | map(attribute='json.data.result') | list }}"
+        clients: "{{ results[0] | map(attribute='value') | map('last') | list }}"
+        slots: "{{ results[1] | map(attribute='value') | map('last') | list }}"
+      ansible.builtin.assert:
+        that:
+          - clients == ['3', '3']
+          - slots == ['48', '48']
+          - results[2] | map(attribute='metric.build') | list == ['35245', '35245']
+          - results[3] | map(attribute='metric.thread') | sort == ['svMain', 'svNetwork', 'svSync']
+
+    # Every series of the pack's jobs (Prometheus' own job in prepare.yml has a "name" label of its
+    # own, which says nothing about players).
+    - name: Read every label name and metric name of the pack's series
+      ansible.builtin.uri:
+        url: "{{ api }}/{{ item }}?match%5B%5D={{ pack_jobs | urlencode }}"
+        return_content: true
+      loop:
+        - labels
+        - label/__name__/values
+      register: gameserver_observability_test_names
+
+    - name: Check that no label or metric is about a single player (counts only)
+      vars:
+        labels: "{{ gameserver_observability_test_names.results[0].json.data }}"
+        names: "{{ gameserver_observability_test_names.results[1].json.data }}"
+      ansible.builtin.assert:
+        that:
+          - labels | length > 0 and names | select('match', 'fxserver_') | list | length > 0
+          - labels | intersect(player_labels) | length == 0
+          - names | select('search', '(?i)player') | list | length == 0
+        fail_msg: "Labels: {{ labels | join(', ') }}"
+
+    - name: Request /perf/ without credentials and with a wrong password (on both addresses)
+      ansible.builtin.uri:
+        url: http://{{ item.host }}:30120/perf/
+        url_username: "{{ item.user | default(omit) }}"
+        url_password: "{{ item.password | default(omit) }}"
+        force_basic_auth: "{{ item.user is defined }}"
+        status_code: 401
+      loop:
+        - host: 127.0.0.1
+        - host: "{{ private_ip }}"
+        - host: 127.0.0.1
+          user: prometheus
+          password: not-the-password-of-this-server
+      loop_control:
+        label: "{{ item.host }} {{ 'with a wrong password' if item.user is defined else 'without credentials' }}"
+
+    - name: Request /perf/ with the credentials of the password file
+      ansible.builtin.uri:
+        url: http://127.0.0.1:30120/perf/
+        url_username: prometheus
+        url_password: "{{ gameserver_observability_perf_password }}"
+        force_basic_auth: true
+        return_content: true
+      register: gameserver_observability_test_perf
+      no_log: true
+
+    - name: Check that /perf/ answered with the tick-time histogram
+      ansible.builtin.assert:
+        that:
+          - gameserver_observability_test_perf.content is search('tickTime_bucket')
+
+    - name: Read the request log of the fake server
+      ansible.builtin.command:
+        argv: [journalctl, --unit, fxserver.service, --output, cat, --no-pager]
+      register: gameserver_observability_test_journal
+      changed_when: false
+
+    - name: Check that the exporters and Prometheus read the status endpoints and never players.json
+      vars:
+        log: "{{ gameserver_observability_test_journal.stdout }}"
+      ansible.builtin.assert:
+        that:
+          - log is search('GET /perf/ -> 200')
+          - log is search('GET /dynamic.json -> 200')
+          - log is search('GET /info.json -> 200')
+          - log is not search('players[.]json')
+          - log is not search(gameserver_observability_perf_password)
+        quiet: true
+
+    - name: Wait until Prometheus evaluated the five rule groups of the pack without an error
+      ansible.builtin.uri:
+        url: "{{ api }}/rules"
+        return_content: true
+      register: gameserver_observability_test_rules
+      until: >-
+        gameserver_observability_test_rules.json.data.groups | default([])
+        | selectattr('file', 'search', '/gameserver-observability-') | list | length == 5
+        and gameserver_observability_test_rules.json.data.groups
+            | selectattr('file', 'search', '/gameserver-observability-')
+            | map(attribute='rules') | flatten | map(attribute='health') | unique | list == ['ok']
+      retries: 24
+      delay: 5
+
+    - name: Wait until the recorded svMain p95 exists for both servers
+      ansible.builtin.uri:
+        url: "{{ api }}/query?query={{ q_recorded | urlencode }}"
+        return_content: true
+      register: gameserver_observability_test_recorded
+      until: gameserver_observability_test_recorded.json.data.result | default([]) | length == 2
+      retries: 24
+      delay: 5
+
+    - name: Read the outage alerts of the pack (none for a healthy server)
+      ansible.builtin.uri:
+        url: "{{ api }}/query?query={{ q_outages | urlencode }}"
+        return_content: true
+      register: gameserver_observability_test_alerts
+
+    - name: Check that no outage alert is pending or firing
+      ansible.builtin.assert:
+        that:
+          - gameserver_observability_test_alerts.json.data.result | length == 0
+
+    - name: Read the dashboard provider
+      ansible.builtin.slurp:
+        src: /etc/grafana/provisioning/dashboards/gameserver-observability.yml
+      register: gameserver_observability_test_provider
+
+    - name: Check the provider (folder "Game server", this role's dashboard folder, read-only)
+      vars:
+        provider: "{{ (gameserver_observability_test_provider.content | b64decode | from_yaml).providers | first }}"
+      ansible.builtin.assert:
+        that:
+          - provider.folder == 'Game server'
+          - provider.options.path == '/var/lib/grafana/dashboards/gameserver-observability'
+          - provider.allowUiUpdates is false
+          - provider.disableDeletion is true
+
+    # The role must stop at its checks, before any change, for each of these settings; the last
+    # one gets through every check but names what Prometheus did not load.
+    - name: Read the files of the role before the refused runs
+      ansible.builtin.stat:
+        path: "{{ item }}"
+        checksum_algorithm: sha256
+      loop: "{{ refused_watch }}"
+      register: gameserver_observability_test_before
+
+    - name: Create a Prometheus config folder that prometheus.yml does not include
+      ansible.builtin.file:
+        path: /etc/prometheus-not-included
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Refuse a listen address on every interface
+      ansible.builtin.include_tasks: ../../../txadmin/molecule/default/tasks/refused_run.yml
+      vars:
+        refused_role: gameserver_observability
+        refused_message: must be a loopback or private address
+        gameserver_observability_listen_address: 0.0.0.0
+        gameserver_observability_firewall_sources: []
+
+    - name: Refuse a placeholder /perf/ password
+      ansible.builtin.include_tasks: ../../../txadmin/molecule/default/tasks/refused_run.yml
+      vars:
+        refused_role: gameserver_observability
+        refused_message: gameserver_observability_perf_password is placeholder
+        gameserver_observability_perf_password: CHANGE_ME_AT_LEAST_24_CHARACTERS
+
+    - name: Refuse two game servers with the same server label
+      ansible.builtin.include_tasks: ../../../txadmin/molecule/default/tasks/refused_run.yml
+      vars:
+        refused_role: gameserver_observability
+        refused_message: each with a unique server label
+        gameserver_observability_targets:
+          - server: game-01
+            address: 127.0.0.1
+          - server: game-01
+            address: 192.0.2.10
+
+    - name: Refuse firewall sources while the exporters listen on loopback
+      ansible.builtin.include_tasks: ../../../txadmin/molecule/default/tasks/refused_run.yml
+      vars:
+        refused_role: gameserver_observability
+        refused_message: sources need a private listen address
+        gameserver_observability_listen_address: 127.0.0.1
+
+    - name: Refuse a host without Prometheus at the configured place
+      ansible.builtin.include_tasks: ../../../txadmin/molecule/default/tasks/refused_run.yml
+      vars:
+        refused_role: gameserver_observability
+        refused_message: This role adds to an existing Prometheus
+        gameserver_observability_prometheus_config_dir: /nonexistent/prometheus
+
+    # The nftables package's own /etc/nftables.conf has no include line: the drop-in would pass
+    # "nft --check" but never be loaded.
+    - name: Refuse an /etc/nftables.conf without the drop-in include
+      block:
+        - name: Keep a copy of /etc/nftables.conf
+          ansible.builtin.copy:
+            src: /etc/nftables.conf
+            dest: /etc/nftables.conf.molecule
+            remote_src: true
+            mode: preserve
+
+        - name: Write /etc/nftables.conf without the include line
+          ansible.builtin.copy:
+            dest: /etc/nftables.conf
+            owner: root
+            group: root
+            mode: "0755"
+            content: |
+              #!/usr/sbin/nft -f
+              flush ruleset
+              table inet filter {
+                chain input {
+                  type filter hook input priority filter;
+                }
+              }
+
+        - name: Run the role with that /etc/nftables.conf
+          ansible.builtin.include_tasks: ../../../txadmin/molecule/default/tasks/refused_run.yml
+          vars:
+            refused_role: gameserver_observability
+            refused_message: has the line include "/etc/nftables.d/*.nft"
+      always:
+        - name: Put /etc/nftables.conf back
+          ansible.builtin.copy:
+            src: /etc/nftables.conf.molecule
+            dest: /etc/nftables.conf
+            remote_src: true
+            mode: preserve
+
+        - name: Remove the copy
+          ansible.builtin.file:
+            path: /etc/nftables.conf.molecule
+            state: absent
+
+    - name: Read the files of the role after the refused runs
+      ansible.builtin.stat:
+        path: "{{ item }}"
+        checksum_algorithm: sha256
+      loop: "{{ refused_watch }}"
+      register: gameserver_observability_test_after
+
+    - name: Check that the refused runs changed none of them
+      ansible.builtin.assert:
+        that:
+          - >-
+            gameserver_observability_test_after.results | map(attribute='stat.checksum') | list
+            == gameserver_observability_test_before.results | map(attribute='stat.checksum') | list
+          - gameserver_observability_test_after.results | map(attribute='stat.exists') | unique | list == [true]
+
+    - name: Report jobs and rules that Prometheus does not load
+      ansible.builtin.include_tasks: ../../../txadmin/molecule/default/tasks/refused_run.yml
+      vars:
+        refused_role: gameserver_observability
+        refused_message: did not load fxserver_perf/game-99
+        gameserver_observability_prometheus_config_dir: /etc/prometheus-not-included
+        gameserver_observability_prometheus_config_file: /etc/prometheus/prometheus.yml
+        gameserver_observability_targets:
+          - server: game-99
+            address: 127.0.0.1
+        gameserver_observability_admin_probes: []
+        __gameserver_observability_check_retries: 2
+
+    # Last, because it changes the host: fewer rule files, and one that an older pack had.
+    - name: Add a rule file of an older pack version
+      ansible.builtin.copy:
+        src: /etc/prometheus/rules/gameserver-observability-host.alerts.yml
+        dest: /etc/prometheus/rules/gameserver-observability-retired.alerts.yml
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Run the role with the game server rules only
+      ansible.builtin.include_role:
+        name: gameserver_observability
+      vars:
+        gameserver_observability_rule_files: [fxserver.recording.yml, fxserver.alerts.yml]
+
+    - name: Find the rule files of the role
+      ansible.builtin.find:
+        paths: /etc/prometheus/rules
+        patterns: gameserver-observability-*.yml
+      register: gameserver_observability_test_rule_files
+
+    - name: Check that only the selected rule files are left
+      ansible.builtin.assert:
+        that:
+          - >-
+            gameserver_observability_test_rule_files.files | map(attribute='path') | map('basename') | sort
+            == ['gameserver-observability-fxserver.alerts.yml', 'gameserver-observability-fxserver.recording.yml']

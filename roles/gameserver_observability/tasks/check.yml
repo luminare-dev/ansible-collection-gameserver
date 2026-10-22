@@ -1,0 +1,95 @@
+- name: Reload Prometheus, Grafana and nftables when their files changed
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait until both exporters answer
+  ansible.builtin.uri:
+    url: http://{{ item.address }}/
+    status_code: 200
+    timeout: 5
+  register: __gameserver_observability_exporter_health
+  until: __gameserver_observability_exporter_health.status | default(0) == 200
+  retries: 12
+  delay: 5
+  loop: "{{ __gameserver_observability_exporters }}"
+  loop_control:
+    label: "{{ item.unit }} on {{ item.address }}"
+
+# Prometheus only knows the jobs and rules when prometheus.yml includes the files of this role
+# (scrape_config_files and rule_files). A reload is asynchronous and new scrape pools appear a few
+# seconds later, so each check waits up to two minutes before it reports what is missing.
+- name: Check that Prometheus loaded the scrape jobs and the rules
+  when:
+    - gameserver_observability_prometheus_url | length > 0
+    - gameserver_observability_prometheus_reload | bool
+  vars:
+    __gameserver_observability_api: "{{ gameserver_observability_prometheus_url | regex_replace('/+$', '') }}/api/v1"
+    __gameserver_observability_expected_targets: >-
+      {{ (['fxserver_perf', 'fxserver_json', 'fxserver_blackbox']
+          | product(gameserver_observability_targets | map(attribute='server')) | map('join', '/') | list)
+         + (gameserver_observability_admin_probes | map(attribute='server')
+            | map('regex_replace', '^', 'fxserver_tunnel/') | list)
+         + (['fxserver_versions/'] if gameserver_observability_versions_job | bool else []) }}
+    __gameserver_observability_loaded_targets: >-
+      {{ (__gameserver_observability_targets.json.data.activeTargets | default([])
+          | map(attribute='scrapePool') | list)
+         | zip(__gameserver_observability_targets.json.data.activeTargets | default([])
+               | map(attribute='labels.server', default='') | list)
+         | map('join', '/') | list }}
+    __gameserver_observability_expected_rules: >-
+      {{ gameserver_observability_rule_files
+         | map('regex_replace', '^', __gameserver_observability_rule_prefix) | list }}
+    __gameserver_observability_loaded_rules: >-
+      {{ __gameserver_observability_rules.json.data.groups | default([]) | map(attribute='file') | map('basename')
+         | unique | list }}
+    # What is expected but not loaded, in the order of the expected lists.
+    __gameserver_observability_missing_targets: >-
+      {{ __gameserver_observability_expected_targets | reject('in', __gameserver_observability_loaded_targets)
+         | list }}
+    __gameserver_observability_missing_rules: >-
+      {{ __gameserver_observability_expected_rules | reject('in', __gameserver_observability_loaded_rules) | list }}
+  block:
+    - name: Wait until Prometheus lists the scrape jobs of every game server
+      ansible.builtin.uri:
+        url: "{{ __gameserver_observability_api }}/targets?state=any"
+        return_content: true
+        timeout: 10
+      register: __gameserver_observability_targets
+      until: >-
+        __gameserver_observability_targets.status | default(0) == 200
+        and __gameserver_observability_missing_targets | length == 0
+      retries: "{{ __gameserver_observability_check_retries }}"
+      delay: 5
+
+    - name: Wait until Prometheus lists the rule files of the pack
+      ansible.builtin.uri:
+        url: "{{ __gameserver_observability_api }}/rules"
+        return_content: true
+        timeout: 10
+      register: __gameserver_observability_rules
+      until: >-
+        __gameserver_observability_rules.status | default(0) == 200
+        and __gameserver_observability_missing_rules | length == 0
+      retries: "{{ __gameserver_observability_check_retries }}"
+      delay: 5
+
+  rescue:
+    - name: Report what Prometheus did not load
+      vars:
+        __gameserver_observability_missing: >-
+          {{ (__gameserver_observability_missing_targets | list)
+             + ((__gameserver_observability_missing_rules | list) if __gameserver_observability_rules is defined
+                else []) }}
+        __gameserver_observability_last_status: >-
+          {{ (__gameserver_observability_rules | default(__gameserver_observability_targets | default({}))).status
+             | default('none') }}
+      ansible.builtin.fail:
+        msg: >-
+          Prometheus at {{ gameserver_observability_prometheus_url }} did not load
+          {{ __gameserver_observability_missing | join(', ') }} (scrape job/server label, or rule
+          file; its last answer had HTTP status {{ __gameserver_observability_last_status }}). Add
+          the role's files to {{ gameserver_observability_prometheus_config_file }}:
+          "scrape_config_files: [{{ __gameserver_observability_scrape_dir }}/*.yml]" and
+          "rule_files: [{{ __gameserver_observability_rules_dir }}/*.yml]" (or globs that include
+          them), and look for a reload error in
+          "journalctl -u {{ gameserver_observability_prometheus_service }}". The files are in
+          place; the next run checks again.

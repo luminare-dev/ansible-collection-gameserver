@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# The repository's test command: ansible-lint (production profile) and the unit tests.
+# The repository's test command: ansible-lint (production profile), the check of the vendored
+# gameserver-observability files and the unit tests.
 # CI runs it in the lint-test job (ci.yml) and on the release tag (release.yml). Locally, run it
 # from any directory with the tools of requirements-test.txt (and gitleaks) on the PATH:
 #
@@ -27,4 +28,7 @@ if [ "${CI:-}" = "true" ]; then
 fi
 
 ansible-lint
+# The pack files in roles/gameserver_observability/files/pack/ against their manifest, and against
+# the pack's release archive when the manifest names a release tag (skipped otherwise).
+python3 scripts/check_vendored_pack.py
 python3 -m unittest discover -s tests -v

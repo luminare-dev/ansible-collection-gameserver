@@ -1,0 +1,22 @@
+{
+  "repository": "https://github.com/luminare-dev/gameserver-observability",
+  "archive_name": "gameserver-observability",
+  "version": "0.1.0",
+  "commit": "88543c9af71c9285f492ece5c593c9137ec03d78",
+  "release_tag": "v0.1.0",
+  "release_sha256": "c3f4dafbd1160ff3afa5f89145374dd5148204c765378b4df87c7a5708ee2418",
+  "files": {
+    "blackbox/blackbox.yml": "50e5aa7969e50e7ce978bcd448b74c0e184d4d08674806406b36beac553996e0",
+    "grafana/dashboards/game-server-overview.json": "f692903fc6e745be3a81b7691e43403c04bdb35606618b0d8f3e53f79732993d",
+    "grafana/provisioning/dashboards/gameserver-observability.yml": "0c24a8e76330c2e22b4869b71fdae362fcafce3dba436c3820dc97572444f798",
+    "json_exporter/config.yml": "8f4404ba10ecb0c580726215a50156804a5a2344225d8c74aa6ea5231bb87834",
+    "prometheus/scrape/fxserver.yml": "a725e84d5884544a2a9f1ddb9ea36240f7b54b31e78c57e37d707fe5ff8b48a7",
+    "prometheus/scrape/tunnel.yml": "34e170e508d52dca49e0e0d223c3d06944a24f744e97ba3b973e4ccef96a4ce2",
+    "prometheus/scrape/versions.yml": "e5c1c3120419f8918d875cb65f2396829b817345ccf2056d248d54c68caf6f4b",
+    "rules/build.alerts.yml": "2f0f3d0e800880c33a0537aaa30493efbd043db7e53c0162906da42bc3aa4079",
+    "rules/fxserver.alerts.yml": "0475bdc0db1a43a96b2e06419b800f518bd0147d71c125f5008ddc3919d8b9e1",
+    "rules/fxserver.recording.yml": "6b004588c28eea6140ccfa0f41ad793d6bb14b8e8894912fde7ea1a834b81dd2",
+    "rules/host.alerts.yml": "34a5a05da796823e5d351a79f1810e197e63d3e6c2196580db94966e181ceeb5",
+    "rules/mariadb.alerts.yml": "a43524a1aa85c9f255eb0dee7c94c995287d9dde5f1120d816345e13e07c35f0"
+  }
+}

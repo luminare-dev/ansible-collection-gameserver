@@ -1,0 +1,71 @@
+# Scenario "default": the fake build 35245 (tests/fake-artifact/) under the fxserver role with
+# /perf/ basic auth, Prometheus 3.15.0 installed in prepare.yml by the prometheus role of
+# prometheus.prometheus (the "existing Prometheus"), and this role on the same host. The two
+# targets reach the same fake server over loopback (game-01, the single-host setup) and over the
+# container's private address (game-02, as a monitoring host reaches a game server over a private
+# network); the exporters listen on that private address, so the firewall drop-in has rules.
+# verify.yml queries Prometheus' API. Shared settings (driver, sequence with idempotence, roles
+# path) come from .config/molecule/config.yml.
+dependency:
+  name: galaxy
+  options:
+    requirements-file: ${MOLECULE_PROJECT_DIRECTORY}/molecule/default/requirements.yml
+
+platforms:
+  - name: gs-gameserver-observability-debian13
+    image: gs-debian13
+    dockerfile: ../../../../molecule/resources/Dockerfile.j2
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    tmpfs:
+      - /run
+      - /run/lock
+    command: /lib/systemd/systemd
+  - name: gs-gameserver-observability-ubuntu2404
+    image: gs-ubuntu2404
+    dockerfile: ../../../../molecule/resources/Dockerfile.j2
+    privileged: true
+    cgroupns_mode: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    tmpfs:
+      - /run
+      - /run/lock
+    command: /lib/systemd/systemd
+
+provisioner:
+  name: ansible
+  inventory:
+    group_vars:
+      all:
+        # Test values only: the fake server accepts any key, and none of these is a real secret.
+        # Both roles get the same /perf/ password, as they would from one encrypted variable.
+        fxserver_license_key: molecule-dummy-key
+        fxserver_perf_user: prometheus
+        fxserver_perf_password: molecule-perf-password-0123456789
+        fxserver_firewall_reload: false
+        fxserver_cfg:
+          hostname: Molecule observability test
+          project_name: Molecule observability
+          max_clients: 48
+        gameserver_observability_perf_user: prometheus
+        gameserver_observability_perf_password: molecule-perf-password-0123456789
+        gameserver_observability_targets:
+          - server: game-01
+            address: 127.0.0.1
+          - server: game-02
+            address: "{{ ansible_facts['default_ipv4']['address'] }}"
+            port: 30120
+        # A closed local port: the job and its probe module are wired up without any network use.
+        gameserver_observability_admin_probes:
+          - server: game-01
+            url: https://127.0.0.1:9/
+        gameserver_observability_listen_address: "{{ ansible_facts['default_ipv4']['address'] }}"
+        gameserver_observability_firewall_sources:
+          - 198.51.100.0/24
+          - 2001:db8::/32
+        # The drop-in is validated with nft --check, but a ruleset is not loaded in a container.
+        gameserver_observability_firewall_reload: false
+        gameserver_observability_grafana_dashboards: true

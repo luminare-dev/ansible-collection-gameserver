@@ -21,6 +21,8 @@ tags:
   - systemd
   - linux
   - application
+  - monitoring
+  - prometheus
 # Only community collections that the roles really use go here, with a version range. The soft
 # dependency on luminare.infra_edge (its base role owns /etc/nftables.conf) is documented in the
 # README and is deliberately not listed.

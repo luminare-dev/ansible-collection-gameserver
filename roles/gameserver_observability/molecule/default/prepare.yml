@@ -1,0 +1,83 @@
+# The fake build 35245 and a minimal /etc/nftables.conf in the layout of the luminare.infra_edge
+# base role: the same preparation as the fxserver role's default scenario. Then the "existing"
+# Prometheus that the role adds to: version 3.15.0, installed by the prometheus role of the
+# prometheus.prometheus collection (its prometheus.yml includes scrape_configs/* and rules/*.yml
+# of /etc/prometheus), and the provisioning folder of a Grafana, which is not installed: the
+# scenario checks the dashboard files the role writes, not Grafana itself.
+- name: Prepare like the fxserver default scenario
+  ansible.builtin.import_playbook: ../../../fxserver/molecule/default/prepare.yml
+
+# Two packages that every real Debian and Ubuntu host has, but the minimal test image does not:
+# iproute2, without whose "ip" Ansible's facts have no default_ipv4 (the scenario's inventory reads
+# it for the private address, molecule.yml), and procps for /bin/kill, which the Prometheus unit's
+# ExecReload runs when the role reloads Prometheus.
+- name: Install iproute2 and procps
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Install iproute2 and procps
+      ansible.builtin.apt:
+        name:
+          - iproute2
+          - procps
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+- name: Install Prometheus 3.15.0 with prometheus.prometheus
+  hosts: all
+  vars:
+    prometheus_version: 3.15.0
+    prometheus_web_listen_address: 127.0.0.1:9090
+    prometheus_local_cache_path: "{{ lookup('ansible.builtin.env', 'MOLECULE_EPHEMERAL_DIRECTORY') }}/prometheus-3.15.0"
+    prometheus_global:
+      scrape_interval: 15s
+      scrape_timeout: 10s
+      evaluation_interval: 15s
+    prometheus_scrape_configs:
+      - job_name: prometheus
+        static_configs:
+          - targets:
+              - 127.0.0.1:9090
+    prometheus_targets: {}
+    prometheus_alert_rules: []
+    # sha256 of prometheus-3.15.0.linux-amd64.tar.gz in the release's sha256sums.txt (2026-10-21);
+    # the prometheus role checks the download against that file, this play against the pin too.
+    gameserver_observability_test_sha256: 2a542df32eac02ee17b9d844fb2aa1de00dafa5476579ba8a3ba862e9d572ea0
+  roles:
+    - role: prometheus.prometheus.prometheus
+  post_tasks:
+    - name: Read the sha256 of the Prometheus archive that the prometheus role downloaded
+      ansible.builtin.stat:
+        path: "{{ prometheus_local_cache_path }}/prometheus-3.15.0.linux-amd64.tar.gz"
+        checksum_algorithm: sha256
+      delegate_to: localhost
+      become: false
+      register: gameserver_observability_test_archive
+
+    - name: Check the archive against the pinned sha256
+      ansible.builtin.assert:
+        that:
+          - gameserver_observability_test_archive.stat.checksum | default('') == gameserver_observability_test_sha256
+        fail_msg: The Prometheus archive does not have the pinned sha256 of release 3.15.0.
+
+    - name: Wait until Prometheus answers
+      ansible.builtin.uri:
+        url: http://127.0.0.1:9090/-/ready
+        status_code: 200
+      register: gameserver_observability_test_ready
+      until: gameserver_observability_test_ready.status | default(0) == 200
+      retries: 24
+      delay: 5
+
+- name: Add the stand-in for Grafana's provisioning folder
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Create /etc/grafana/provisioning/dashboards (Grafana itself is not installed)
+      ansible.builtin.file:
+        path: /etc/grafana/provisioning/dashboards
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"

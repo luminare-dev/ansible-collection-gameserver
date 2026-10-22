@@ -1,0 +1,105 @@
+# Files for the existing Prometheus, below gameserver_observability_prometheus_config_dir:
+#   scrape_configs/gameserver-observability.yml   the pack's scrape jobs for the targets
+#   rules/gameserver-observability-<file>.yml     the pack's rule files (gameserver_observability_rule_files)
+#   secrets/fxserver_perf                         the /perf/ password (password_file)
+# prometheus.yml must include the first two (scrape_config_files and rule_files); check.yml shows
+# whether it does. Each file is checked with promtool before it replaces the old one.
+
+# A Prometheus installed by another role may own these folders with its own mode; they are only
+# created when missing, never changed.
+- name: Look for the folders of the scrape jobs and the rules
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    get_checksum: false
+  loop:
+    - "{{ __gameserver_observability_scrape_dir }}"
+    - "{{ __gameserver_observability_rules_dir }}"
+  register: __gameserver_observability_prometheus_dirs
+
+- name: Create the folders of the scrape jobs and the rules when they are missing
+  ansible.builtin.file:
+    path: "{{ item.item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop: "{{ __gameserver_observability_prometheus_dirs.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: not item.stat.exists
+
+- name: Create the folder for the /perf/ password (readable by the Prometheus group)
+  ansible.builtin.file:
+    path: "{{ __gameserver_observability_secrets_dir }}"
+    state: directory
+    owner: root
+    group: "{{ gameserver_observability_prometheus_group }}"
+    mode: "0750"
+
+- name: Write the /perf/ password file (root, group of Prometheus, 0640)
+  ansible.builtin.copy:
+    content: "{{ gameserver_observability_perf_password }}\n"
+    dest: "{{ __gameserver_observability_perf_password_file }}"
+    owner: root
+    group: "{{ gameserver_observability_prometheus_group }}"
+    mode: "0640"
+  no_log: true
+  diff: false
+  notify: Reload Prometheus for gameserver-observability
+
+- name: Write the scrape jobs (checked with promtool check config)
+  ansible.builtin.template:
+    src: scrape_configs.yml.j2
+    dest: "{{ __gameserver_observability_scrape_file }}"
+    owner: root
+    group: root
+    mode: "0644"
+    validate: "{{ gameserver_observability_promtool }} check config %s"
+  notify: Reload Prometheus for gameserver-observability
+
+- name: Write the rule files of the pack (checked with promtool check rules)
+  ansible.builtin.copy:
+    src: pack/rules/{{ item }}
+    dest: "{{ __gameserver_observability_rules_dir }}/{{ __gameserver_observability_rule_prefix }}{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+    validate: "{{ gameserver_observability_promtool }} check rules %s"
+  loop: "{{ gameserver_observability_rule_files }}"
+  notify: Reload Prometheus for gameserver-observability
+
+# Every gameserver-observability-*.yml that is not selected goes: a rule file taken out of
+# gameserver_observability_rule_files, and one that an older pack version had and this one has not.
+- name: Find the rule files this role wrote before
+  ansible.builtin.find:
+    paths: "{{ __gameserver_observability_rules_dir }}"
+    patterns: "{{ __gameserver_observability_rule_prefix }}*.yml"
+    file_type: file
+  register: __gameserver_observability_old_rules
+
+- name: Remove the rule files of the pack that are not selected
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  vars:
+    __gameserver_observability_keep: >-
+      {{ gameserver_observability_rule_files | map('regex_replace', '^', __gameserver_observability_rule_prefix)
+         | list }}
+  loop: >-
+    {{ __gameserver_observability_old_rules.files | map(attribute='path') | map('basename')
+       | difference(__gameserver_observability_keep)
+       | map('regex_replace', '^', __gameserver_observability_rules_dir ~ '/') | list }}
+  notify: Reload Prometheus for gameserver-observability
+
+# The whole configuration, with every file it includes, must still pass before Prometheus is
+# reloaded: a reload with a broken file would keep the old configuration and only log an error.
+- name: Check the Prometheus configuration with promtool
+  ansible.builtin.command:
+    argv:
+      - "{{ gameserver_observability_promtool }}"
+      - check
+      - config
+      - "{{ gameserver_observability_prometheus_config_file }}"
+  register: __gameserver_observability_promtool_check
+  changed_when: false
+  failed_when: __gameserver_observability_promtool_check.rc != 0

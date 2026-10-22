@@ -1,0 +1,47 @@
+# luminare.gameserver.gameserver_observability: wire game servers into an existing Prometheus with
+# the vendored gameserver-observability pack, from outside the server process and counts only.
+# Order: every check first (nothing changes when one fails), then the exporters, the files for
+# Prometheus (checked with promtool), the optional dashboard, the firewall drop-in, and finally
+# the reloads and a check that Prometheus loaded the jobs and the rules.
+
+- name: Check the settings, the platform, Prometheus and the firewall layout
+  ansible.builtin.import_tasks: assert.yml
+
+- name: Install the packages the role needs (archives, nftables when managed)
+  ansible.builtin.apt:
+    name: "{{ __gameserver_observability_packages }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Create the folders for the exporter archives, programs and configs
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ __gameserver_observability_cache_dir }}"
+    - "{{ __gameserver_observability_lib_dir }}"
+    - "{{ __gameserver_observability_etc_dir }}"
+
+- name: Install json_exporter and blackbox_exporter
+  ansible.builtin.include_tasks: exporter.yml
+  loop: "{{ __gameserver_observability_exporters }}"
+  loop_control:
+    loop_var: __gameserver_observability_exporter
+    label: "{{ __gameserver_observability_exporter.name }} {{ __gameserver_observability_exporter.version }}"
+
+- name: Write the scrape jobs, the rules and the /perf/ password for Prometheus
+  ansible.builtin.import_tasks: prometheus.yml
+
+- name: Add the dashboard to Grafana
+  ansible.builtin.import_tasks: grafana.yml
+  when: gameserver_observability_grafana_dashboards | bool
+
+- name: Allow the exporter ports in the nftables drop-in
+  ansible.builtin.import_tasks: firewall.yml
+
+- name: Reload what changed and check that Prometheus loaded the jobs and the rules
+  ansible.builtin.import_tasks: check.yml

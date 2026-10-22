@@ -1,0 +1,51 @@
+# The pack's dashboard "Game server overview" for a Grafana on this host: the dashboard JSON in its
+# own folder and a provider file that loads it into the Grafana folder "Game server". The
+# dashboard chooses its data source with a variable (Grafana's default Prometheus data source
+# first), so no data source is written. Grafana rescans the folder every 60 seconds; it is only
+# restarted when the provider file is new or changed.
+- name: Create the dashboard folder
+  ansible.builtin.file:
+    path: "{{ gameserver_observability_grafana_dashboards_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Write the dashboard "Game server overview"
+  ansible.builtin.copy:
+    src: pack/grafana/dashboards/game-server-overview.json
+    dest: "{{ gameserver_observability_grafana_dashboards_dir }}/game-server-overview.json"
+    owner: root
+    group: root
+    mode: "0644"
+
+# Grafana's packages create provisioning/dashboards themselves (owner and mode are theirs); the
+# role only creates it when it is missing.
+- name: Look for the dashboard provisioning folder
+  ansible.builtin.stat:
+    path: "{{ gameserver_observability_grafana_provisioning_dir }}/dashboards"
+    get_checksum: false
+  register: __gameserver_observability_grafana_provisioning
+
+- name: Create the dashboard provisioning folder when it is missing
+  ansible.builtin.file:
+    path: "{{ gameserver_observability_grafana_provisioning_dir }}/dashboards"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: not __gameserver_observability_grafana_provisioning.stat.exists
+
+- name: Write the dashboard provider (the pack's file with this role's dashboard folder)
+  ansible.builtin.template:
+    src: grafana-dashboards.yml.j2
+    dest: "{{ gameserver_observability_grafana_provisioning_dir }}/dashboards/gameserver-observability.yml"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart Grafana for gameserver-observability
+
+- name: Read the state of Grafana's unit (the restart handler restarts a running Grafana only)
+  ansible.builtin.systemd_service:
+    name: "{{ gameserver_observability_grafana_service }}"
+  register: __gameserver_observability_grafana_status

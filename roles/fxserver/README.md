@@ -205,7 +205,8 @@ when `sv_prometheusBasicAuthUser` and `sv_prometheusBasicAuthPassword` are both 
   runs keep it (`changed=0`); nothing that scrapes `/perf/` knows it.
 
 To collect the metrics, set `fxserver_perf_password` from an encrypted variables file and give
-Prometheus the same value.
+Prometheus the same value (the `gameserver_observability` role's
+`gameserver_observability_perf_password`).
 
 ## Updates and rollbacks
 

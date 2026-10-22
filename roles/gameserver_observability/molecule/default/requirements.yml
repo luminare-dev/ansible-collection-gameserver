@@ -1,0 +1,15 @@
+# Collections for this scenario only: the shared ones of molecule/requirements.yml (container
+# management) and the prometheus role of prometheus.prometheus, which prepare.yml uses to install
+# the "existing" Prometheus 3.15.0 that the role adds to, with community.general, its dependency.
+# They are test tools, not dependencies of luminare.gameserver. Exact versions; ansible-galaxy
+# checks each download against the sha256 that Galaxy publishes. Keep the first two equal to
+# molecule/requirements.yml; review all four with the monthly tool bump.
+collections:
+  - name: community.docker
+    version: "5.3.0"
+  - name: ansible.posix
+    version: "2.2.2"
+  - name: prometheus.prometheus
+    version: "0.30.2"
+  - name: community.general
+    version: "13.5.0"

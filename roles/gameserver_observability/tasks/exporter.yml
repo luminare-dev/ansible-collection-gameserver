@@ -1,0 +1,84 @@
+# One exporter (__gameserver_observability_exporter, from __gameserver_observability_exporters in
+# vars/main.yml): download the official linux-amd64 release archive, checked against the pinned
+# sha256, unpack it into its own versioned folder, write the pack's module config and a hardened
+# unit, and (re)start the service. Older versions of this exporter are removed afterwards.
+- name: Set the paths of the exporter {{ __gameserver_observability_exporter.name }}
+  ansible.builtin.set_fact:
+    __gameserver_observability_dirname: >-
+      {{ __gameserver_observability_exporter.name }}-{{ __gameserver_observability_exporter.version }}.linux-amd64
+    __gameserver_observability_binary: >-
+      {{ __gameserver_observability_lib_dir }}/{{ __gameserver_observability_exporter.name }}-{{
+      __gameserver_observability_exporter.version }}.linux-amd64/{{ __gameserver_observability_exporter.name }}
+
+- name: Download the release archive (pinned sha256) of {{ __gameserver_observability_exporter.name }}
+  ansible.builtin.get_url:
+    url: "{{ __gameserver_observability_exporter.url }}"
+    dest: "{{ __gameserver_observability_cache_dir }}/{{ __gameserver_observability_dirname }}.tar.gz"
+    checksum: "sha256:{{ __gameserver_observability_exporter.sha256 }}"
+    owner: root
+    group: root
+    mode: "0644"
+    timeout: 60
+
+- name: Unpack {{ __gameserver_observability_exporter.name }}
+  ansible.builtin.unarchive:
+    src: "{{ __gameserver_observability_cache_dir }}/{{ __gameserver_observability_dirname }}.tar.gz"
+    dest: "{{ __gameserver_observability_lib_dir }}"
+    remote_src: true
+    owner: root
+    group: root
+    creates: "{{ __gameserver_observability_binary }}"
+
+- name: Write the modules of the pack for {{ __gameserver_observability_exporter.name }}
+  ansible.builtin.copy:
+    src: "{{ __gameserver_observability_exporter.config_src }}"
+    dest: "{{ __gameserver_observability_exporter.config }}"
+    owner: root
+    group: root
+    mode: "0644"
+  register: __gameserver_observability_exporter_config
+
+- name: Write the unit {{ __gameserver_observability_exporter.unit }}
+  ansible.builtin.template:
+    src: exporter.service.j2
+    dest: /etc/systemd/system/{{ __gameserver_observability_exporter.unit }}
+    owner: root
+    group: root
+    mode: "0644"
+  register: __gameserver_observability_exporter_unit
+
+- name: Restart after a change of the program, modules or unit {{ __gameserver_observability_exporter.unit }}
+  ansible.builtin.systemd_service:
+    name: "{{ __gameserver_observability_exporter.unit }}"
+    state: restarted
+    enabled: true
+    daemon_reload: true
+  when: __gameserver_observability_exporter_config is changed or __gameserver_observability_exporter_unit is changed
+
+- name: Enable and start {{ __gameserver_observability_exporter.unit }}
+  ansible.builtin.systemd_service:
+    name: "{{ __gameserver_observability_exporter.unit }}"
+    state: started
+    enabled: true
+
+- name: Find older versions of {{ __gameserver_observability_exporter.name }}
+  ansible.builtin.find:
+    paths:
+      - "{{ __gameserver_observability_lib_dir }}"
+      - "{{ __gameserver_observability_cache_dir }}"
+    patterns:
+      - "{{ __gameserver_observability_exporter.name }}-*.linux-amd64"
+      - "{{ __gameserver_observability_exporter.name }}-*.linux-amd64.tar.gz"
+    excludes:
+      - "{{ __gameserver_observability_dirname }}"
+      - "{{ __gameserver_observability_dirname }}.tar.gz"
+    file_type: any
+  register: __gameserver_observability_old_versions
+
+- name: Remove older versions of {{ __gameserver_observability_exporter.name }}
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ __gameserver_observability_old_versions.files }}"
+  loop_control:
+    label: "{{ item.path }}"

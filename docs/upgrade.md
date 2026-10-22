@@ -111,6 +111,22 @@ txadmin role checks its `TXHOST_*` values against the rules of txAdmin 8.1.1; be
 build with a newer txAdmin, read txAdmin's release notes and its `docs/env-config.md` for changed
 variables.
 
+## Updating the exporters and the pack (gameserver_observability role)
+
+- **Exporters:** json_exporter and blackbox_exporter are pinned by
+  `gameserver_observability_json_exporter_version` and `gameserver_observability_blackbox_exporter_version`,
+  each with its `_sha256`. To run another release, set both values from the release's
+  `sha256sums.txt` (the `linux-amd64` archive) and run the playbook: the role downloads the new
+  archive, checks it, restarts the exporter on the new version and removes the old one. Check the
+  release notes of json_exporter for changes to its module format first; the modules come from
+  the pack.
+- **Pack:** the rules, modules, scrape jobs and dashboard are part of the collection
+  (`roles/gameserver_observability/files/pack/`, version in `manifest.json`), so a collection
+  release brings a new pack version; its changelog names it. Read the pack's changelog for
+  renamed series or alerts, which can affect your own dashboards, recording rules or silences.
+  The role removes every `gameserver-observability-*.yml` in Prometheus' `rules/` folder that is
+  not selected, so a rule file that the new pack no longer has goes too.
+
 ## Version notes
 
 No release needs manual upgrade steps yet. Releases that do get a section here.
