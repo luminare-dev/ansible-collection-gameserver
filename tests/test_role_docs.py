@@ -30,7 +30,7 @@ def readme_variables(role: Path) -> set[str]:
 @unittest.skipIf(yaml is None, "PyYAML is not installed")
 class RoleVariablesTest(unittest.TestCase):
     def test_there_are_roles(self):
-        self.assertEqual({"fxserver", "txadmin"} - {r.name for r in ROLES}, set())
+        self.assertEqual({"fxserver", "txadmin", "gameserver_observability"} - {r.name for r in ROLES}, set())
 
     def test_defaults_specs_and_readme_agree(self):
         for role in ROLES:
@@ -56,6 +56,7 @@ class RoleVariablesTest(unittest.TestCase):
             "fxserver": ("fxserver_license_key", "fxserver_perf_password", "fxserver_server_data_deploy_key",
                          "fxserver_secrets_cfg_extra"),
             "txadmin": ("txadmin_api_token", "txadmin_default_account_password_hash", "txadmin_deployer_prefill"),
+            "gameserver_observability": ("gameserver_observability_perf_password",),
         }
         for role, names in secrets.items():
             specs = yaml.safe_load((ROOT / "roles" / role / "meta" / "argument_specs.yml").read_text(encoding="utf-8"))

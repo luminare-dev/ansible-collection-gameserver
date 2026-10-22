@@ -1,0 +1,44 @@
+# {{ ansible_managed }}
+# luminare.gameserver.gameserver_observability: {{ __gameserver_observability_exporter.description }},
+# release {{ __gameserver_observability_exporter.version }}, with the modules of gameserver-observability {{ __gameserver_observability_pack.version }}.
+[Unit]
+Description={{ __gameserver_observability_exporter.description }} on {{ __gameserver_observability_exporter.address }}
+Documentation=https://github.com/luminare-dev/ansible-collection-gameserver/tree/main/roles/gameserver_observability
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+# A user that exists only while the service runs: the exporter needs no files of its own.
+DynamicUser=yes
+ExecStart={{ __gameserver_observability_binary }} \
+    --config.file={{ __gameserver_observability_exporter.config }} \
+    --web.listen-address={{ __gameserver_observability_exporter.address }}
+Restart=on-failure
+RestartSec=5s
+
+# The exporter only reads its config and opens TCP connections to the game servers.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

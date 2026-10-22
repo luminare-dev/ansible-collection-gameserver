@@ -109,11 +109,13 @@ the platform scans public repositories for keys.
 **Fix:** add `exec secrets.cfg` as the last line of `server.cfg` in the repository, and add
 `secrets.cfg` and `cache/` to its `.gitignore`.
 
-## The fxserver role stops because it cannot check `45-fxserver.nft`
+## The fxserver or gameserver_observability role stops because it cannot check its drop-in
 
-**Cause:** `/etc/nftables.d` exists (or `fxserver_firewall_manage` is `true`), so the role writes
-the game port drop-in, but `/etc/nftables.conf` is missing, does not define `table inet filter`
-or lacks the line `include "/etc/nftables.d/*.nft"`, or `nft` is not installed. The
+**Cause:** `/etc/nftables.d` exists (or `fxserver_firewall_manage` or
+`gameserver_observability_firewall_manage` is `true`), so the role writes its drop-in
+(`45-fxserver.nft` or `50-observability.nft`), but `/etc/nftables.conf` is missing, does not
+define `table inet filter` or lacks the line `include "/etc/nftables.d/*.nft"`, or `nft` is not
+installed. The
 `/etc/nftables.conf` of the nftables package has no include line: a drop-in would pass
 `nft --check` there but never be loaded. The message names what is missing; nothing was changed.
 
@@ -193,6 +195,68 @@ when `txadmin_api_token` is empty (the endpoint is off then).
 
 **Fix:** set `txadmin_api_token` and send it in the header:
 `curl -fsS -H "x-txadmin-envtoken: <token>" http://127.0.0.1:40120/host/status`.
+
+## The gameserver_observability role says "This role adds to an existing Prometheus"
+
+**Cause:** the role found no Prometheus on the host where it runs: no
+`gameserver_observability_prometheus_config_dir` (default `/etc/prometheus`) with
+`prometheus.yml`, no promtool 2.43 or later under the name or path in
+`gameserver_observability_promtool`, or no group `gameserver_observability_prometheus_group`. It
+stopped before any change.
+
+**Fix:** install Prometheus first in the same play (for example with the `prometheus` role of the
+`prometheus.prometheus` collection), or point the variables at your installation. Run the role on
+the Prometheus host, not on a game server that has no Prometheus.
+
+## The gameserver_observability role says the unit "does not exist or has no reload command"
+
+**Cause:** `gameserver_observability_prometheus_service` (default `prometheus.service`) is not the
+unit of your Prometheus, or that unit has no `ExecReload=` line, so `systemctl reload` cannot make
+Prometheus read the new files.
+
+**Fix:** set the variable to your Prometheus unit, add `ExecReload=/bin/kill -HUP $MAINPID` to it
+(the `prometheus.prometheus` collection's unit has it), or set
+`gameserver_observability_prometheus_reload: false` and reload Prometheus yourself after each run.
+
+## The gameserver_observability role says "must be a loopback or private address"
+
+**Cause:** `gameserver_observability_listen_address` is `0.0.0.0`, `::` or a public address. The
+exporters would then answer probe requests from the internet.
+
+**Fix:** keep `127.0.0.1` when Prometheus runs on the same host, or use the host's private
+address and list the hosts that may connect in `gameserver_observability_firewall_sources`.
+
+## The gameserver_observability role says the `/perf/` password is "missing", "placeholder" or "invalid"
+
+**Cause:** `gameserver_observability_perf_password` is empty, still a `CHANGE_ME` value, shorter
+than 24 characters, or holds spaces or quotes. It must be the password the game servers use for
+`/perf/` (`fxserver_perf_password` or the txadmin role's toggle).
+
+**Fix:** set it from the same encrypted variable as the game servers' password, for example
+`gameserver_observability_perf_password: "{{ fxserver_perf_password }}"` in plain mode, or
+`"{{ txadmin_prometheus_basic_auth.password }}"` with the txadmin role's toggle (as in the
+example inventory; on another host through that game server's `hostvars`).
+
+## The `fxserver_perf` targets are down with "401 Unauthorized"
+
+**Cause:** the user or password in `gameserver_observability_perf_*` differs from
+`sv_prometheusBasicAuthUser` or `sv_prometheusBasicAuthPassword` in the game server's
+`secrets.cfg`. When the game server has neither `fxserver_perf_password` nor the txadmin role's
+toggle, the fxserver role wrote a random password there, which no Prometheus knows.
+
+**Fix:** use one encrypted variable for both roles and run the playbooks of the game server and of
+the Prometheus host again. `curl -s -o /dev/null -w '%{http_code}\n' -u prometheus http://<game server>:30120/perf/`
+(it asks for the password) answers 200 with the right credentials.
+
+## `lint-test` stops in `check_vendored_pack.py` with "cannot download"
+
+**Cause:** the check compares the vendored pack files with the pack release that
+`files/pack/manifest.json` names (`release_tag`), and downloads that release's `SHA256SUMS` and
+archive from github.com for it. The download failed: no network access, or GitHub did not answer.
+
+**Fix:** run the job again once github.com answers. `python3 scripts/check_vendored_pack.py --offline`
+runs the manifest check alone, for example on a machine without internet access; CI always runs
+the full check.
 
 ## Still stuck?
 

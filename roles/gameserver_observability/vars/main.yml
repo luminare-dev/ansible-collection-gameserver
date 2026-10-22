@@ -1,0 +1,90 @@
+# Internal values of luminare.gameserver.gameserver_observability (not meant to be overridden).
+
+# The vendored gameserver-observability pack: files/pack/, described by files/pack/manifest.json
+# (version, source commit, sha256 of every file; scripts/check_vendored_pack.py checks it).
+__gameserver_observability_pack: "{{ lookup('ansible.builtin.file', 'pack/manifest.json') | from_json }}"
+__gameserver_observability_pack_rules:
+  - build.alerts.yml
+  - fxserver.alerts.yml
+  - fxserver.recording.yml
+  - host.alerts.yml
+  - mariadb.alerts.yml
+
+# Where the role installs the exporters: release archives in the cache, unpacked per version
+# below the lib folder, configs from the pack below the config folder. Every name carries
+# "gameserver-observability", so exporters of other setups on the same host stay untouched.
+__gameserver_observability_cache_dir: /var/cache/gameserver-observability
+__gameserver_observability_lib_dir: /usr/local/lib/gameserver-observability
+__gameserver_observability_etc_dir: /etc/gameserver-observability
+
+# "host:port" with brackets around an IPv6 address.
+__gameserver_observability_listen_host: >-
+  {{ ('[' ~ gameserver_observability_listen_address ~ ']') if ':' in gameserver_observability_listen_address
+     else gameserver_observability_listen_address }}
+__gameserver_observability_json_exporter_address: >-
+  {{ __gameserver_observability_listen_host }}:{{ gameserver_observability_json_exporter_port }}
+__gameserver_observability_blackbox_exporter_address: >-
+  {{ __gameserver_observability_listen_host }}:{{ gameserver_observability_blackbox_exporter_port }}
+
+# The two exporters (tasks/exporter.yml runs once for each).
+__gameserver_observability_exporters:
+  - name: json_exporter
+    description: json_exporter (game server status endpoints)
+    unit: gameserver-observability-json-exporter.service
+    version: "{{ gameserver_observability_json_exporter_version }}"
+    sha256: "{{ gameserver_observability_json_exporter_sha256 }}"
+    url: >-
+      https://github.com/prometheus-community/json_exporter/releases/download/v{{
+      gameserver_observability_json_exporter_version }}/json_exporter-{{
+      gameserver_observability_json_exporter_version }}.linux-amd64.tar.gz
+    config_src: pack/json_exporter/config.yml
+    config: "{{ __gameserver_observability_etc_dir }}/json_exporter.yml"
+    address: "{{ __gameserver_observability_json_exporter_address }}"
+  - name: blackbox_exporter
+    description: blackbox_exporter (game server probes)
+    unit: gameserver-observability-blackbox-exporter.service
+    version: "{{ gameserver_observability_blackbox_exporter_version }}"
+    sha256: "{{ gameserver_observability_blackbox_exporter_sha256 }}"
+    url: >-
+      https://github.com/prometheus/blackbox_exporter/releases/download/v{{
+      gameserver_observability_blackbox_exporter_version }}/blackbox_exporter-{{
+      gameserver_observability_blackbox_exporter_version }}.linux-amd64.tar.gz
+    config_src: pack/blackbox/blackbox.yml
+    config: "{{ __gameserver_observability_etc_dir }}/blackbox.yml"
+    address: "{{ __gameserver_observability_blackbox_exporter_address }}"
+
+# Files for the existing Prometheus.
+__gameserver_observability_scrape_dir: "{{ gameserver_observability_prometheus_config_dir }}/scrape_configs"
+__gameserver_observability_scrape_file: >-
+  {{ gameserver_observability_prometheus_config_dir }}/scrape_configs/gameserver-observability.yml
+__gameserver_observability_rules_dir: "{{ gameserver_observability_prometheus_config_dir }}/rules"
+__gameserver_observability_rule_prefix: gameserver-observability-
+__gameserver_observability_secrets_dir: "{{ gameserver_observability_prometheus_config_dir }}/secrets"
+__gameserver_observability_perf_password_file: >-
+  {{ gameserver_observability_prometheus_config_dir }}/secrets/fxserver_perf
+
+# How often tasks/check.yml asks Prometheus for the loaded jobs and rules, 5 seconds apart (two
+# minutes in all). The Molecule scenario lowers it for its run that must report a missing job.
+__gameserver_observability_check_retries: 24
+
+__gameserver_observability_nft_dir: /etc/nftables.d
+__gameserver_observability_nft_dropin: /etc/nftables.d/50-observability.nft
+# /etc/nftables.conf must define table inet filter and include the drop-in folder (the layout of
+# the luminare.infra_edge base role). The same patterns as in the txadmin role.
+__gameserver_observability_nft_table_re: '^[ \t]*table[ \t]+inet[ \t]+filter\b'
+__gameserver_observability_nft_include_re: '^[ \t]*include[ \t]+"/etc/nftables[.]d/[*][.]nft"[ \t]*$'
+__gameserver_observability_packages: >-
+  {{ ['ca-certificates', 'tar', 'gzip']
+     + (['nftables'] if gameserver_observability_firewall_manage | bool else []) }}
+
+# Loopback or private addresses: 127.0.0.0/8 or ::1, the RFC 1918 networks, the RFC 6598 shared
+# address space and IPv6 unique local addresses (fc00::/7); the same pattern as the monitoring
+# role of infra-edge-lab. Exporters never listen anywhere else.
+# yamllint disable-line rule:line-length
+__gameserver_observability_private_address_re: '^(127(\.[0-9]{1,3}){3}|10(\.[0-9]{1,3}){3}|172\.(1[6-9]|2[0-9]|3[01])(\.[0-9]{1,3}){2}|192\.168(\.[0-9]{1,3}){2}|100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])(\.[0-9]{1,3}){2}|::1|[fF][cCdD][0-9a-fA-F]{2}:[0-9a-fA-F:]*)$'
+__gameserver_observability_loopback_address_re: '^(127(\.[0-9]{1,3}){3}|::1)$'
+# Host names, IPv4 and IPv6 addresses (without brackets) of the targets.
+# yamllint disable-line rule:line-length
+__gameserver_observability_target_address_re: '^([A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?([.][A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*|[0-9A-Fa-f:.]*:[0-9A-Fa-f:.]*)$'
+# Values of the server label: what the pack's dashboard and alerts show for a game server.
+__gameserver_observability_server_label_re: '^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$'

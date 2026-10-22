@@ -65,6 +65,26 @@ often:
 | `txadmin_interface` | str | `""` | Leave it empty; a loopback address is refused, because txAdmin would force the game server onto it. |
 | `txadmin_max_slots` | int | `0` | Highest `sv_maxclients` txAdmin accepts; `0` leaves it unset. |
 
+## gameserver_observability
+
+The full table is in the
+[gameserver_observability README](../roles/gameserver_observability/README.md#variables). The
+role runs on the host of an existing Prometheus (the game server itself or a monitoring host), not
+through the playbook `luminare.gameserver.gameserver`. The settings you change most often:
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `gameserver_observability_targets` | list of dict | `[{server: game-01, address: 127.0.0.1, port: 30120}]` | Game servers to watch: the `server` label the dashboard and alerts show, the address Prometheus reaches the game port on, and the port. |
+| `gameserver_observability_perf_password` | str | `""` | The game servers' `/perf/` password (secret, required); the same value as `fxserver_perf_password` or the txadmin role's toggle. |
+| `gameserver_observability_perf_user` | str | `prometheus` | The game servers' `/perf/` user. |
+| `gameserver_observability_listen_address` | str | `127.0.0.1` | Where json_exporter (7979) and blackbox_exporter (9115) listen: loopback or a private address. |
+| `gameserver_observability_prometheus_config_dir` | path | `/etc/prometheus` | Prometheus' configuration folder; `prometheus.yml` must include `scrape_configs/*.yml` and `rules/*.yml` below it. |
+| `gameserver_observability_rule_files` | list of str | all five rule files of the pack | Rule files to install. |
+| `gameserver_observability_admin_probes` | list of dict | `[]` | Admin hostnames behind an access-protected tunnel to probe. |
+| `gameserver_observability_versions_job` | bool | `false` | Read the platform's version list for the alert about an outdated build (outbound HTTPS). |
+| `gameserver_observability_grafana_dashboards` | bool | `false` | Add the dashboard "Game server overview" to a Grafana on the same host. |
+| `gameserver_observability_firewall_sources` | list of str | `[]` | Who may reach the exporter ports from other hosts; written to `/etc/nftables.d/50-observability.nft`. |
+
 ## Secrets
 
 Secrets never go into this repository, an issue or a log. Keep them in an encrypted variables file
@@ -97,6 +117,13 @@ txAdmin as `TXHOST_*` variables; the `/perf/` password goes into `secrets.cfg` t
 fxserver role. The role refuses `CHANGE_ME`
 placeholders for the token and the `/perf/` password, and checks every value before it writes
 it, because txAdmin can print an invalid value to its log when it stops at boot.
+
+The `gameserver_observability` role takes one secret, `gameserver_observability_perf_password`,
+and writes it to `/etc/prometheus/secrets/fxserver_perf` (owner root, group of Prometheus, mode
+0640, `no_log`, no diff), which Prometheus reads through `password_file`; the scrape
+configuration holds only the file's path. The role refuses an empty value and `CHANGE_ME`
+placeholders. Prometheus sends the password in plain HTTP to the game port, so scrape game
+servers on the same host or over a private network only.
 
 The backup archives in `/var/backups/fxserver` contain `secrets.cfg` and txAdmin's `admins.json`
 (with the password hashes of its accounts); they are readable by root only. Treat copies of them

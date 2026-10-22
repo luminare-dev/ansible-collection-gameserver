@@ -1,0 +1,18 @@
+# {{ ansible_managed }}
+# luminare.gameserver.gameserver_observability: json_exporter ({{ gameserver_observability_json_exporter_port }}/tcp) and
+# blackbox_exporter ({{ gameserver_observability_blackbox_exporter_port }}/tcp), listening on {{ gameserver_observability_listen_address }}.
+# Included by /etc/nftables.conf after table inet filter (input policy drop): accept rules only.
+{% set v4 = gameserver_observability_firewall_sources | reject('search', ':') | list %}
+{% set v6 = gameserver_observability_firewall_sources | select('search', ':') | list %}
+{% for port in [gameserver_observability_json_exporter_port, gameserver_observability_blackbox_exporter_port] %}
+{% if v4 | length > 0 %}
+add rule inet filter input ip saddr { {{ v4 | join(', ') }} } tcp dport {{ port }} accept
+{% endif %}
+{% if v6 | length > 0 %}
+add rule inet filter input ip6 saddr { {{ v6 | join(', ') }} } tcp dport {{ port }} accept
+{% endif %}
+{% endfor %}
+{% if gameserver_observability_firewall_sources | length == 0 %}
+# gameserver_observability_firewall_sources is empty: no rule, the exporters are reachable from
+# this host only.
+{% endif %}

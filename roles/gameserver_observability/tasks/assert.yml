@@ -1,0 +1,275 @@
+- name: Gather the minimal facts the role needs
+  ansible.builtin.setup:
+    gather_subset:
+      - min
+  when: ansible_facts['os_family'] is not defined or ansible_facts['architecture'] is not defined
+
+- name: Check the platform (Debian or Ubuntu on x86_64; the exporter downloads are linux-amd64)
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['os_family'] == 'Debian'
+      - ansible_facts['architecture'] == 'x86_64'
+    fail_msg: >-
+      luminare.gameserver.gameserver_observability supports Debian and Ubuntu on x86_64; this host
+      is {{ ansible_facts['distribution'] | default('unknown') }} on {{ ansible_facts['architecture'] }}.
+    quiet: true
+
+- name: Check the game servers to watch
+  vars:
+    __gameserver_observability_labels: "{{ gameserver_observability_targets | map(attribute='server') | list }}"
+  ansible.builtin.assert:
+    that:
+      - gameserver_observability_targets | length > 0
+      - __gameserver_observability_labels | unique | length == __gameserver_observability_labels | length
+      - >-
+        gameserver_observability_targets | map(attribute='server') | map('string')
+        | reject('match', __gameserver_observability_server_label_re) | list | length == 0
+      - >-
+        gameserver_observability_targets | map(attribute='address') | map('string')
+        | reject('match', __gameserver_observability_target_address_re) | list | length == 0
+      - >-
+        gameserver_observability_targets | map(attribute='port', default=30120) | map('int')
+        | select('lt', 1) | list | length == 0
+      - >-
+        gameserver_observability_targets | map(attribute='port', default=30120) | map('int')
+        | select('gt', 65535) | list | length == 0
+    fail_msg: >-
+      gameserver_observability_targets needs at least one game server, each with a unique server
+      label (letters, digits, ".", "_" and "-", at most 63 characters), an address (a host name, or
+      an IPv4 or IPv6 address without brackets) and a port 1-65535. The server labels are
+      {{ __gameserver_observability_labels | join(', ') }}.
+    quiet: true
+
+- name: Check the exporter, Prometheus and rule settings
+  ansible.builtin.assert:
+    that:
+      - gameserver_observability_listen_address is match(__gameserver_observability_private_address_re)
+      - >-
+        gameserver_observability_json_exporter_port | int >= 1
+        and gameserver_observability_json_exporter_port | int <= 65535
+      - >-
+        gameserver_observability_blackbox_exporter_port | int >= 1
+        and gameserver_observability_blackbox_exporter_port | int <= 65535
+      - gameserver_observability_json_exporter_port | int != gameserver_observability_blackbox_exporter_port | int
+      - gameserver_observability_json_exporter_version is match('^[0-9]+[.][0-9]+[.][0-9]+$')
+      - gameserver_observability_blackbox_exporter_version is match('^[0-9]+[.][0-9]+[.][0-9]+$')
+      - gameserver_observability_json_exporter_sha256 is match('^[0-9a-f]{64}$')
+      - gameserver_observability_blackbox_exporter_sha256 is match('^[0-9a-f]{64}$')
+      - gameserver_observability_rule_files | difference(__gameserver_observability_pack_rules) | length == 0
+      - >-
+        'fxserver.alerts.yml' not in gameserver_observability_rule_files
+        or 'fxserver.recording.yml' in gameserver_observability_rule_files
+      - >-
+        gameserver_observability_prometheus_url == ''
+        or gameserver_observability_prometheus_url is match('^https?://[^\s/]+/?$')
+      - gameserver_observability_prometheus_config_dir is match('^/[^\s]+$')
+    fail_msg: >-
+      Invalid setting: gameserver_observability_listen_address must be a loopback or private
+      address (never 0.0.0.0 or a public one; it is {{ gameserver_observability_listen_address }}),
+      the two exporter ports 1-65535 and different, the exporter versions X.Y.Z with a sha256 of 64
+      lower-case hex digits, gameserver_observability_rule_files only pack rule files
+      ({{ __gameserver_observability_pack_rules | join(', ') }}; fxserver.alerts.yml needs
+      fxserver.recording.yml), gameserver_observability_prometheus_url "" or http(s)://host[:port]
+      and the Prometheus config folder an absolute path.
+    quiet: true
+
+- name: Check the optional admin hostname probes
+  ansible.builtin.assert:
+    that:
+      - item.server | default('') in gameserver_observability_targets | map(attribute='server') | list
+      - item.url | default('') is match('^https://[A-Za-z0-9.-]+(:[0-9]+)?(/[^\s"]*)?$')
+    fail_msg: >-
+      gameserver_observability_admin_probes: each entry needs the server label of one of the
+      targets and an https:// URL without spaces or quotes ({{ item.server | default('no server') }}).
+    quiet: true
+  loop: "{{ gameserver_observability_admin_probes }}"
+  loop_control:
+    label: "{{ item.server | default('') }}"
+
+- name: Check the firewall sources (IPv4 or IPv6 addresses or networks, no /0)
+  ansible.builtin.assert:
+    that:
+      - >-
+        item is match('^[0-9]{1,3}([.][0-9]{1,3}){3}(/[0-9]{1,2})?$')
+        or item is match('^[0-9A-Fa-f:]*:[0-9A-Fa-f:.]*(/[0-9]{1,3})?$')
+      - item is not match('.*/0$')
+      - gameserver_observability_listen_address is not match(__gameserver_observability_loopback_address_re)
+    fail_msg: >-
+      gameserver_observability_firewall_sources: '{{ item }}' must be an IPv4 or IPv6 address or
+      network other than /0, and sources need a private listen address: with
+      gameserver_observability_listen_address {{ gameserver_observability_listen_address }} the
+      exporters cannot be reached from another host anyway.
+    quiet: true
+  loop: "{{ gameserver_observability_firewall_sources }}"
+
+- name: Summarise the /perf/ credentials without their values
+  ansible.builtin.set_fact:
+    __gameserver_observability_perf_check:
+      password: >-
+        {{ 'missing' if gameserver_observability_perf_password | length == 0
+           else 'placeholder' if gameserver_observability_perf_password is match('(?i)^change_?me')
+           else 'ok' if gameserver_observability_perf_password | length >= 24
+                        and gameserver_observability_perf_password is match('^[^" \t\r\n]+$')
+           else 'invalid' }}
+      user: "{{ 'ok' if gameserver_observability_perf_user is match('^[A-Za-z0-9_.-]+$') else 'invalid' }}"
+  no_log: true
+
+- name: Check the /perf/ credentials (the password is never shown)
+  ansible.builtin.assert:
+    that:
+      - __gameserver_observability_perf_check.password == 'ok'
+      - __gameserver_observability_perf_check.user == 'ok'
+    fail_msg: >-
+      gameserver_observability_perf_password is {{ __gameserver_observability_perf_check.password }}:
+      set the /perf/ password of your game servers (sv_prometheusBasicAuthPassword) from an
+      encrypted variables file, at least 24 characters without spaces or quotes and not a
+      CHANGE_ME placeholder. gameserver_observability_perf_user allows letters, digits, "_",
+      "." and "-".
+    quiet: true
+
+- name: Read the Prometheus configuration folder and file
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    get_checksum: false
+  loop:
+    - "{{ gameserver_observability_prometheus_config_dir }}"
+    - "{{ gameserver_observability_prometheus_config_file }}"
+  register: __gameserver_observability_prometheus_paths
+
+- name: Run promtool --version
+  ansible.builtin.command:
+    argv:
+      - "{{ gameserver_observability_promtool }}"
+      - --version
+  register: __gameserver_observability_promtool_version
+  changed_when: false
+  failed_when: false
+
+- name: Read the Prometheus group
+  ansible.builtin.getent:
+    database: group
+    key: "{{ gameserver_observability_prometheus_group }}"
+    fail_key: false
+
+- name: Check that Prometheus and promtool are installed (2.43 or later, for scrape_config_files)
+  vars:
+    # "promtool, version 3.15.0 (branch: …)" -> 3.15.0; no answer -> 0.0.0.
+    __gameserver_observability_promtool_release: >-
+      {{ (__gameserver_observability_promtool_version.stdout | default('')
+          | regex_search('version [0-9]+[.][0-9]+[.][0-9]+') or 'version 0.0.0')
+         | regex_replace('^version ', '') }}
+    # The first line of its answer, or why there is none.
+    __gameserver_observability_promtool_found: >-
+      {{ ((__gameserver_observability_promtool_version.stdout | default('')).splitlines() | first
+          | default('no output', true))
+         if __gameserver_observability_promtool_version.rc | default(1) == 0
+         else ('none, exit code ' ~ (__gameserver_observability_promtool_version.rc | default('unknown')) ~ ': '
+               ~ ((__gameserver_observability_promtool_version.stderr | default('')
+                   ~ __gameserver_observability_promtool_version.msg | default('')).splitlines() | first
+                  | default('no output', true))) }}
+  ansible.builtin.assert:
+    that:
+      - __gameserver_observability_prometheus_paths.results[0].stat.isdir | default(false)
+      - __gameserver_observability_prometheus_paths.results[1].stat.isreg | default(false)
+      - __gameserver_observability_promtool_version.rc | default(1) == 0
+      - __gameserver_observability_promtool_release is version('2.43.0', '>=')
+      - (ansible_facts['getent_group'] | default({})).get(gameserver_observability_prometheus_group) is not none
+    fail_msg: >-
+      This role adds to an existing Prometheus and needs, on this host: the folder
+      {{ gameserver_observability_prometheus_config_dir }} with
+      {{ gameserver_observability_prometheus_config_file }}, promtool 2.43 or later as
+      "{{ gameserver_observability_promtool }}" (found: {{ __gameserver_observability_promtool_found }}) and
+      the group {{ gameserver_observability_prometheus_group }}. Install Prometheus first (for example
+      with the prometheus role of the prometheus.prometheus collection), or set
+      gameserver_observability_prometheus_config_dir, _config_file, _group and promtool. Nothing was
+      changed.
+    quiet: true
+
+- name: Read the state of the Prometheus unit
+  ansible.builtin.systemd_service:
+    name: "{{ gameserver_observability_prometheus_service }}"
+  register: __gameserver_observability_prometheus_status
+  when: gameserver_observability_prometheus_reload | bool
+
+- name: Check that the Prometheus unit exists and can reload (it is reloaded after a change)
+  ansible.builtin.assert:
+    that:
+      - __gameserver_observability_prometheus_status.status.LoadState | default('not-found') == 'loaded'
+      - __gameserver_observability_prometheus_status.status.CanReload | default('no') == 'yes'
+    fail_msg: >-
+      The unit {{ gameserver_observability_prometheus_service }} does not exist or has no reload
+      command (ExecReload), so Prometheus cannot be reloaded. Set
+      gameserver_observability_prometheus_service to the unit of your Prometheus, or
+      gameserver_observability_prometheus_reload to false and reload it yourself. Nothing was
+      changed.
+    quiet: true
+  when: gameserver_observability_prometheus_reload | bool
+
+- name: Read the Grafana provisioning folder
+  ansible.builtin.stat:
+    path: "{{ gameserver_observability_grafana_provisioning_dir }}"
+    get_checksum: false
+  register: __gameserver_observability_grafana_paths
+  when: gameserver_observability_grafana_dashboards | bool
+
+- name: Check that Grafana is installed when the dashboard is enabled
+  ansible.builtin.assert:
+    that:
+      - __gameserver_observability_grafana_paths.stat.isdir | default(false)
+    fail_msg: >-
+      gameserver_observability_grafana_dashboards is true, but
+      {{ gameserver_observability_grafana_provisioning_dir }} does not exist: install Grafana on
+      this host first, or set gameserver_observability_grafana_provisioning_dir. Nothing was changed.
+    quiet: true
+  when: gameserver_observability_grafana_dashboards | bool
+
+# The drop-in is written when gameserver_observability_firewall_manage is true or /etc/nftables.d
+# exists, and it is validated together with /etc/nftables.conf by nft. Check both here, before
+# anything changes, instead of failing later with an unclear validate error.
+- name: Look for the nftables drop-in directory, /etc/nftables.conf and nft
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    get_checksum: false
+  loop:
+    - "{{ __gameserver_observability_nft_dir }}"
+    - /etc/nftables.conf
+    - /usr/sbin/nft
+  register: __gameserver_observability_nft_stat
+
+- name: Decide whether the role writes the firewall drop-in
+  ansible.builtin.set_fact:
+    __gameserver_observability_firewall_write: >-
+      {{ gameserver_observability_firewall_manage | bool
+         or __gameserver_observability_nft_stat.results[0].stat.exists }}
+
+- name: Read /etc/nftables.conf (it must include the drop-in folder)
+  ansible.builtin.slurp:
+    src: /etc/nftables.conf
+  register: __gameserver_observability_nft_conf
+  when:
+    - __gameserver_observability_firewall_write | bool
+    - __gameserver_observability_nft_stat.results[1].stat.exists
+
+# Without the include line (as in the nftables package's own /etc/nftables.conf) the drop-in
+# would pass "nft --check" but never be loaded.
+- name: Require /etc/nftables.conf with the drop-in include, and nft, when the role writes the drop-in
+  vars:
+    __gameserver_observability_nft_text: >-
+      {{ __gameserver_observability_nft_conf.content | b64decode
+         if __gameserver_observability_nft_conf is not skipped else '' }}
+  ansible.builtin.assert:
+    that:
+      - __gameserver_observability_nft_stat.results[1].stat.exists
+      - gameserver_observability_firewall_manage | bool or __gameserver_observability_nft_stat.results[2].stat.exists
+      - __gameserver_observability_nft_text is search(__gameserver_observability_nft_table_re, multiline=true)
+      - __gameserver_observability_nft_text is search(__gameserver_observability_nft_include_re, multiline=true)
+    fail_msg: >-
+      The role writes the drop-in {{ __gameserver_observability_nft_dropin }} and checks it with
+      "nft --check" together with /etc/nftables.conf. That needs nft (installed:
+      {{ __gameserver_observability_nft_stat.results[2].stat.exists }}) and an /etc/nftables.conf
+      (present: {{ __gameserver_observability_nft_stat.results[1].stat.exists }}) that defines
+      table inet filter and has the line include "/etc/nftables.d/*.nft"; without that line the
+      rules would never be loaded. Set up the firewall layout of the luminare.infra_edge base role
+      first, or remove an unused {{ __gameserver_observability_nft_dir }}. Nothing was changed.
+    quiet: true
+  when: __gameserver_observability_firewall_write | bool

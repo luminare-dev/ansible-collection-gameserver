@@ -26,11 +26,15 @@ Ansible roles that install, configure, update and back up game servers, for Five
 
 Running a FiveM or RedM server (FXServer) on Linux by hand is a list of steps that are easy to get
 wrong: download a server build, create a service user and a systemd unit, keep the admin port off
-the internet, keep the license key out of git, update every few weeks and keep a way back. This
-Ansible collection turns that list into two roles and a playbook that combines them, and it holds
-them to the same test bar: Molecule scenarios that CI runs on Debian 13 and Ubuntu 24.04 in
-systemd containers with an idempotence check (including the playbook with its example inventory),
-ansible-lint with its production profile, and a secret scan that recognises server license keys.
+the internet, keep the license key out of git, update every few weeks and keep a way back, and
+notice when the server is down or lagging. This Ansible collection turns that list into three
+roles and a playbook that combines the first two, and it holds them to the same test bar: Molecule
+scenarios that CI runs on Debian 13 and Ubuntu 24.04 in systemd containers with an idempotence
+check (including the playbook with its example inventory), ansible-lint with its production
+profile, and a secret scan that recognises server license keys. The third role adds the game
+servers to an existing Prometheus with the metrics, alerts and dashboard of the
+[gameserver-observability](https://github.com/luminare-dev/gameserver-observability) pack,
+collected from outside the server process and as counts only.
 
 ### Why not an existing collection or a manual install
 
@@ -91,12 +95,16 @@ flowchart LR
     admin(["Admin through an SSH tunnel<br/>or a tunnel connector"]) -->|"txAdmin port 40120:<br/>loopback and listed sources only"| host
     ci["CI: ansible-lint, unit tests,<br/>Molecule per role, scenario<br/>and platform, secret scan"] -.->|"checks every change"| playbook
     e2e["Manual end-to-end run<br/>on a cloud server"] -.->|"real build and license key<br/>(not run yet)"| playbook
+    collection --> observability["gameserver_observability role<br/>(pack files vendored<br/>from gameserver-observability)"]
+    observability -->|"exporters, scrape jobs,<br/>rules, /perf/ password file"| prometheus[("Prometheus host:<br/>the game server itself<br/>or a monitoring host")]
+    prometheus -->|"/perf/ with basic auth,<br/>/dynamic.json, /info.json, probes<br/>(loopback or private network)"| host
 ```
 
 | Role | What it does |
 |---|---|
 | [`fxserver`](roles/fxserver/README.md) | Installs a server build checked against its sha256 and runs it as a hardened systemd unit (user `fxserver`, `/opt/fxserver`), directly with `server.cfg` or under txAdmin (`fxserver_mode`); switches builds with one rename, checks the server after every switch and rolls a failed update back; backs up server-data and txData (zstd tar) before every switch and optionally every night; writes `secrets.cfg` (0600; `/perf/` always behind basic auth, with a random password when none is set), the game port drop-in `45-fxserver.nft`, a journald retention and textfile metrics. |
 | [`txadmin`](roles/txadmin/README.md) | Configures txAdmin, the admin panel shipped with the build, through `TXHOST_*` variables in `/etc/fxserver/txadmin.env` (root, 0600) and the unit drop-in `fxserver.service.d/10-txadmin.conf`: port, optional default account (bcrypt hash) and API token, slot limit, quiet mode; never a loopback `TXHOST_INTERFACE`, never txAdmin's own files. Writes `40-txadmin.nft` (port 40120 from loopback and listed sources only), and its observability toggle puts `/perf/` basic auth into `secrets.cfg`. |
+| [`gameserver_observability`](roles/gameserver_observability/README.md) | Adds game servers to an existing Prometheus on the same host or a monitoring host, with the files of the [gameserver-observability](https://github.com/luminare-dev/gameserver-observability) pack 0.1.0 vendored into the role: json_exporter and blackbox_exporter from their official releases (pinned version and sha256) as hardened units on loopback or a private address, the pack's scrape jobs for every game server, its recording and alerting rules (checked with promtool), the `/perf/` password as a `password_file` (0640), the drop-in `50-observability.nft` and optionally the dashboard "Game server overview" for Grafana. Reloads Prometheus and checks that it loaded the jobs and rules. Counts only: never `players.json`. |
 
 - **Playbook:** `luminare.gameserver.gameserver` ([`playbooks/gameserver.yml`](playbooks/gameserver.yml))
   runs the `fxserver` role and, with `fxserver_mode: txadmin`, the `txadmin` role on the group
@@ -112,7 +120,15 @@ flowchart LR
   use a fake server build (`tests/fake-artifact/`), never a real one. The `txadmin` role's
   `playbook` scenario runs the playbook with the example inventory, changing only the
   placeholders and the download, and checks that the unchanged example and a firewall layout
-  without the drop-in include are refused.
+  without the drop-in include are refused. The `gameserver_observability` scenario runs the fake
+  build, Prometheus 3.15.0 (installed with the `prometheus.prometheus` collection) and the role on
+  one host and checks the result through Prometheus' API.
+- **Pack files:** `roles/gameserver_observability/files/pack/` holds the files of the
+  gameserver-observability pack's 0.1.0 release, with their version, source commit, release tag,
+  the release archive's sha256 and every file's sha256 in `manifest.json`.
+  `scripts/check_vendored_pack.py` checks them against the manifest and byte for byte against
+  that release's archive, which it downloads and checks against the release's `SHA256SUMS`
+  ([ADR 0018](docs/adr/0018-vendor-the-observability-pack-and-check-it-against-its-release.md)).
 - **Tests:** every scenario reuses one base configuration (`.config/molecule/config.yml`) and one
   test image (`molecule/resources/Dockerfile.j2`: `debian:trixie` or `ubuntu:24.04`, pinned by
   digest, with systemd as PID 1). Instance names start with `gs-`. The sequence is dependency,
@@ -123,8 +139,8 @@ flowchart LR
   job runs `molecule test --scenario-name <scenario> --platform-name <instance>` with a 30-minute
   limit, on pull requests, by hand and every Tuesday. The `molecule` job reports one result for
   all of them; it fails when a scenario fails and passes when there is none. The `lint-test` job runs ansible-lint
-  (production profile) and the unit tests through `scripts/test.sh`. The Python tools come from
-  the hash-pinned `requirements-test.txt`.
+  (production profile), the check of the vendored pack files and the unit tests through
+  `scripts/test.sh`. The Python tools come from the hash-pinned `requirements-test.txt`.
 - **End-to-end run:** [`.github/workflows/e2e.yml`](.github/workflows/e2e.yml) runs the playbook
   twice per mode with the real build on a cloud server that exists only for the run and checks
   port 40120 from outside ([docs/e2e.md](docs/e2e.md)). It starts only by hand, in the protected
@@ -149,10 +165,13 @@ role writes `/etc/nftables.d/45-fxserver.nft` (accept rules for the game port on
 directory exists or `fxserver_firewall_manage` is `true`, and checks it with `nft --check`
 together with `/etc/nftables.conf` before it replaces the old file. The `txadmin` role does the
 same with `40-txadmin.nft` (port 40120 from loopback and `txadmin_firewall_sources` only), and it
-stops when it cannot write its drop-in, unless `txadmin_firewall_required` is `false`. Both roles
-require `table inet filter` and the line `include "/etc/nftables.d/*.nft"` in `/etc/nftables.conf`
-and stop before any change without them: the nftables package's own `/etc/nftables.conf` has no
-such line, so a drop-in would pass `nft --check` but never be loaded.
+stops when it cannot write its drop-in, unless `txadmin_firewall_required` is `false`. The
+`gameserver_observability` role writes `50-observability.nft` the same way as the `fxserver`
+role, with accept rules for the two exporter ports from `gameserver_observability_firewall_sources`
+only (none by default: Prometheus on the same host reaches them over loopback). Each role that
+writes a drop-in requires `table inet filter` and the line `include "/etc/nftables.d/*.nft"` in
+`/etc/nftables.conf` and stops before any change without them: the nftables package's own
+`/etc/nftables.conf` has no such line, so a drop-in would pass `nft --check` but never be loaded.
 
 ## Design decisions
 
@@ -175,6 +194,8 @@ The decisions behind this project are recorded as short ADRs in [docs/adr/](docs
 - [ADR 0015: Why txAdmin is configured with environment variables and started by a launcher mode](docs/adr/0015-txadmin-settings-as-environment-variables.md)
 - [ADR 0016: Why the admin port test runs in the test container's own network namespace](docs/adr/0016-prove-the-admin-port-closed-in-a-container-network-namespace.md)
 - [ADR 0017: Why one playbook, tested with its example inventory, and a manual cloud run](docs/adr/0017-one-playbook-tested-with-its-example-and-a-manual-cloud-run.md)
+- [ADR 0018: Why the observability pack is vendored and checked against its release](docs/adr/0018-vendor-the-observability-pack-and-check-it-against-its-release.md)
+- [ADR 0019: Why the observability role adds to an existing Prometheus](docs/adr/0019-observability-adds-to-an-existing-prometheus.md)
 
 ## Supported versions
 
@@ -186,6 +207,10 @@ The decisions behind this project are recorded as short ADRs in [docs/adr/](docs
 | Ubuntu 24.04 "noble" (managed host) | Molecule image from `ubuntu:24.04`, pinned by digest | second platform |
 | Server build (`fxserver` role) | pinned default: build 35245, the Recommended build on 2026-10-21, with the sha256 of its official download; Molecule runs a fake build with that number | Linux x86_64 builds; run the current Recommended build ([upgrade guide](docs/upgrade.md#which-build-to-run)) |
 | txAdmin (`txadmin` role) | pinned default: txAdmin 8.1.1, shipped with build 35245; Molecule runs a fake txAdmin, and the variable rules were checked against txAdmin 8.1.1's source and by starting it by hand | txAdmin 8 (`TXHOST_*` variables) as shipped with the build |
+| Prometheus (`gameserver_observability` role) | 3.15.0, installed in Molecule with the `prometheus` role of `prometheus.prometheus` 0.30.2 | 2.43 and later (`scrape_config_files`), with promtool on the same host |
+| Exporters (`gameserver_observability` role) | pinned defaults: json_exporter 0.8.0 and blackbox_exporter 0.29.0 (linux-amd64, sha256 from each release's `sha256sums.txt`); both run in Molecule | the pinned versions; others through the version and sha256 variables, if they read the pack's module files |
+| gameserver-observability pack (`gameserver_observability` role) | 0.1.0 (release `v0.1.0`), vendored into the role | the vendored version |
+| Grafana (`gameserver_observability` role, optional) | not installed in Molecule: the scenario checks the provisioning files the role writes | the Grafana versions the pack supports (13.2.4) |
 | Test tools | ansible-lint 26.10.1, Molecule 26.10.0, molecule-plugins[docker] 26.10.12 | as pinned in `requirements-test.txt` |
 
 Fixes go into the latest minor release only. See the
@@ -213,9 +238,9 @@ Fixes go into the latest minor release only. See the
 - Molecule runs in privileged systemd containers, not on virtual machines or cloud servers. The
   `txadmin` scenario loads both drop-ins into the container's own network namespace and connects
   from a second namespace (port 40120 open to a listed source only, the game port open); the
-  `fxserver` scenarios only validate their drop-in with `nft --check`. Neither replaces a check
-  from outside a real host: port 40120 seen from another machine needs a virtual machine or cloud
-  server, which only the end-to-end run provides.
+  `fxserver` and `gameserver_observability` scenarios only validate their drop-ins with
+  `nft --check`. None of this replaces a check from outside a real host: port 40120 seen from
+  another machine needs a virtual machine or cloud server, which only the end-to-end run provides.
 - In txAdmin mode the playbook needs `/etc/nftables.conf` in the layout of the
   `luminare.infra_edge` base role (or `txadmin_firewall_required: false` behind another
   firewall). Neither the playbook nor this collection sets it up; the `playbook` scenario and the
@@ -225,6 +250,23 @@ Fixes go into the latest minor release only. See the
   role refuses to continue, so set the layout up first.
 - Backups stay on the host (`/var/backups/fxserver`); copies elsewhere, for example with restic,
   are up to the operator (paths in the [role README](roles/fxserver/README.md#backups)).
+- The `gameserver_observability` role was tested against the fake server only: Prometheus
+  scraped synthetic answers of `/perf/`, `/dynamic.json` and `/info.json`. A real server's answers
+  (and `/perf/` with and without credentials on a real build) have not been probed yet. Its
+  scenario runs the game server, Prometheus and the exporters in one container; the monitoring
+  host setup is covered by a second target on the container's private address, not by a second
+  host. Grafana is not installed in the tests (only its provisioning files are checked), and no
+  alert was delivered anywhere: the role installs no Alertmanager.
+- The `gameserver_observability` role installs the pack files of the pack's 0.1.0 release that
+  are vendored into it; a newer pack release reaches the role only with a new release of this
+  collection. The check of those files against the release archive downloads it from GitHub, so
+  the `lint-test` job needs access to github.com
+  ([ADR 0018](docs/adr/0018-vendor-the-observability-pack-and-check-it-against-its-release.md)).
+- The pack has no metrics from txAdmin's `/host/status` yet (a json_exporter module with the
+  `x-txadmin-envtoken` header): its fields have not been read from a real txAdmin, so this role
+  does not scrape it.
+- The `gameserver_observability` role is not part of the playbook `luminare.gameserver.gameserver`;
+  it runs in a play of its own on the Prometheus host ([Installation](docs/install.md#add-the-metrics)).
 - A server with a valid license key appears in the public server list unless it runs LAN-only
   (`fxserver_cfg` key `lan: true`, which writes `sv_lan true`; tested with the fake build only).
   According to the platform documentation, `sv_master1 ""` (the default
@@ -253,12 +295,14 @@ Measured in this repository on 2026-10-21; the rows marked 2026-10-22 were measu
 | Molecule `fxserver` `upgrade` (2026-10-22) | passed on Debian 13 and Ubuntu 24.04, with Ansible connecting as a non-root user with sudo and no `/perf/` password set; idempotence `changed=0` on both; update together with a new server-data commit (the pre-update backup holds the old `server.cfg`), refused switch after a failed backup, five runs stopped at their checks (drop-in directory without `/etc/nftables.conf`, `/etc/nftables.conf` without the drop-in include, a quote, a line break and a resource name in `fxserver_cfg`), automatic rollback of the broken build, rollback by build number, the removed deploy key, and `/perf/` refusing a request without credentials and answering with the random password from `secrets.cfg` all checked; 10 min 46 s for both platforms | `molecule test -s upgrade` in `roles/fxserver`, same tools and method |
 | Molecule `txadmin` `default` (2026-10-22) | passed on Debian 13 and Ubuntu 24.04 (fxserver role in txAdmin mode, then the txadmin role); idempotence `changed=0` on both; environment file, drop-ins, token, default account, `/perf/` toggle and journal checked; port 40120 answered a listed source and dropped another, port 30120 stayed open; six refused runs stopped at their checks; 4 min 56 s for both platforms | `molecule test` in `roles/txadmin`, same tools and method |
 | Molecule `txadmin` `playbook` (2026-10-22) | passed on Debian 13 and Ubuntu 24.04 (the playbook `luminare.gameserver.gameserver` with the example inventory); idempotence `changed=0` on both; the end-to-end run's host checks in txAdmin mode, the example's settings on the host (environment file, both drop-ins, `server.cfg`, nightly backup timer, `/info.json`, `/perf/` toggle), the refusal of the unchanged example (license key and API token placeholders, no file changed) and the pre-check's refusal of `/etc/nftables.conf` without the drop-in include checked; 6 min 3 s for both platforms, 3 min 49 s for Debian 13 alone as a CI job runs it | `molecule test -s playbook` in `roles/txadmin`, same tools, another scenario running at the same time; the play handles the two instances one after the other (`serial: 1`); then `molecule test -s playbook --platform-name gs-txadmin-playbook-debian13` with no other scenario running |
+| Molecule `gameserver_observability` `default` (2026-10-22) | passed on Debian 13 and Ubuntu 24.04 (the fxserver role with `/perf/` basic auth, Prometheus 3.15.0 from `prometheus.prometheus` 0.30.2, then the role with a loopback and a private-address target); idempotence `changed=0` on both; 13 targets up, 6 probes successful, all 7 `fxserver_*` series of the pack for both servers, no player label or metric name, 5 rule groups healthy, `/perf/` refused without and with a wrong password, no `players.json` request; six refused runs (one of them with an `/etc/nftables.conf` without the drop-in include) left the role's files unchanged, a `prometheus.yml` that does not include the role's files was reported, deselected and old rule files were removed; 6 min 51 s on Debian 13 and 8 min 11 s on Ubuntu 24.04 | `molecule test --platform-name <instance>` in `roles/gameserver_observability`, one platform per run as a CI job runs it, same tools, another scenario running at the same time; `ANSIBLE_PIPELINING=True` in the environment; wall time of each `molecule test` command |
 | End-to-end run (`e2e.yml`) | not run yet: no license key and no cloud project were used | [docs/e2e.md](docs/e2e.md); the workflow passed actionlint 1.7.12 (with shellcheck 0.9.0 and 0.10.0) and zizmor 1.30.1 without findings |
-| Unit tests (2026-10-22) | 176 run: 175 passed, 1 skipped (a check that applies only to the template repository) | `python3 -m unittest discover -s tests` with gitleaks 8.30.1 and markdownlint-cli2 0.23.2 on the PATH, Python 3.14.3; all of them also under Python 3.12.15 (`python:3.12-slim`, in the release build below) |
-| ansible-lint (2026-10-22) | 0 failures, 0 warnings in 101 files; profile `production` passed | `ansible-lint` from the repository root, ansible-lint 26.10.1 with ansible-core 2.21.5 |
-| Collection tarball (2026-10-22) | `luminare-gameserver-0.0.0.tar.gz`: 105 entries, about 92.8 kB (1 kB = 1000 bytes); the `fxserver` and `txadmin` roles without their Molecule scenarios, the playbook with its pre-check and the example inventory; no `docs/brand/`, scripts, unit tests, end-to-end playbooks, fake build or Molecule files. Installed into an empty folder, the playbook (with the installed example inventory) and a play with both roles pass `--syntax-check` | `ansible-galaxy collection build` (ansible-core 2.21.5) twice from a fresh copy of the tree, then `tar -tzf` and the file size; the size varies by a few bytes between builds, because the archive stores file and build times; then `scripts/check_collection_tarball.sh` on the tarball (the unit test `tests/test_collection_tarball.py` does the same) |
+| Unit tests (2026-10-22) | 204 run: 203 passed, 1 skipped (a check that applies only to the template repository) | `python3 -m unittest discover -s tests` with gitleaks 8.30.1 and markdownlint-cli2 0.23.2 on the PATH, Python 3.14.3; all of them also under Python 3.12.15 (`python:3.12-slim`, in the release build below) |
+| ansible-lint (2026-10-22) | 0 failures, 0 warnings in 137 files; profile `production` passed | `ansible-lint` from the repository root, ansible-lint 26.10.1 with ansible-core 2.21.5, with no community collection installed (as in CI) |
+| Vendored pack files (2026-10-22) | 12 files of gameserver-observability 0.1.0 equal to the manifest and byte for byte to the files of the release archive `gameserver-observability-0.1.0.tar.gz` (release `v0.1.0`, commit `88543c9a`), whose sha256 matched the release's `SHA256SUMS` and the manifest | `python3 scripts/check_vendored_pack.py`, which downloaded the release's `SHA256SUMS` and archive; the files were copied from that archive with `--update-from` |
+| Collection tarball (2026-10-22) | `luminare-gameserver-0.0.0.tar.gz`: 155 entries, about 140.1 kB (1 kB = 1000 bytes); the three roles without their Molecule scenarios (the `gameserver_observability` role with its vendored pack files), the playbook with its pre-check and the example inventory; no `docs/brand/`, scripts, unit tests, end-to-end playbooks, fake build or Molecule files. Installed into an empty folder, the playbook (with the installed example inventory) and a play with all three roles pass `--syntax-check` | `ansible-galaxy collection build` (ansible-core 2.21.5) twice from a fresh copy of the tree, then `tar -tzf` and the file size; the size varies by a few bytes between builds, because the archive stores file and build times; then `scripts/check_collection_tarball.sh` on the tarball (the unit test `tests/test_collection_tarball.py` does the same) |
 | Hash-pinned test tools | 45 packages installed, `pip check` clean | `pip install --require-hashes --only-binary=:all: -r requirements-test.txt` in a `python:3.12-slim` container |
-| Release build (2026-10-22) | `ansible-collection-gameserver-0.1.0.tar.gz` and `luminare-gameserver-0.1.0.tar.gz`, one `SHA256SUMS` that verifies both; the test-command passed (176 unit tests, 2 skipped: the template-only check and the markdownlint test); the extra-dist-command built the collection tarball and its check passed (install, playbook and both roles `--syntax-check`); with `galaxy.yml` left at 0.0.0 the step fails (2026-10-21) | `release.yml`'s test-command (with `CI=true`, so with the hash-pinned tools and the pinned gitleaks) and extra-dist-command in `python:3.12-slim` (Python 3.12.15), on a local `v0.1.0` tag with the release-please version edits applied by hand |
+| Release build (2026-10-22) | `ansible-collection-gameserver-0.1.0.tar.gz` and `luminare-gameserver-0.1.0.tar.gz`, one `SHA256SUMS` that verifies both; the test-command passed (ansible-lint, the vendored pack check, 204 unit tests with 2 skipped: the template-only check and the markdownlint test, as markdownlint-cli2 is not installed there); the extra-dist-command built the collection tarball and its check passed (install, playbook and all three roles `--syntax-check`); with `galaxy.yml` left at 0.0.0 the step fails (2026-10-21) | `release.yml`'s test-command (with `CI=true`, so with the hash-pinned tools and the pinned gitleaks) and extra-dist-command in `python:3.12-slim` (Python 3.12.15), on a local `v0.1.0` tag with the release-please version edits applied by hand |
 | Install paths | git URL with a ref, `requirements.yml` with `type: git`, and the tarball: each installs `luminare.gameserver` | `ansible-galaxy collection install` against a local clone (`file://` URL) and the locally built tarball |
 
 ## Documentation and links
@@ -267,6 +311,9 @@ Measured in this repository on 2026-10-21; the rows marked 2026-10-22 were measu
   [Upgrade](docs/upgrade.md) · [Troubleshooting](docs/troubleshooting.md) ·
   [Runbook](docs/runbook.md) · [End-to-end run](docs/e2e.md) · [ADRs](docs/adr/)
 - [Playbook](playbooks/gameserver.yml) and [example inventory](examples/inventory/)
+- Role READMEs: [fxserver](roles/fxserver/README.md) · [txadmin](roles/txadmin/README.md) ·
+  [gameserver_observability](roles/gameserver_observability/README.md); the metrics, alerts and
+  dashboard come from [gameserver-observability](https://github.com/luminare-dev/gameserver-observability)
 - [Changelog](CHANGELOG.md) and [releases](https://github.com/luminare-dev/ansible-collection-gameserver/releases)
   (each release has the source archive, the collection tarball, `SHA256SUMS` and a build
   provenance attestation)

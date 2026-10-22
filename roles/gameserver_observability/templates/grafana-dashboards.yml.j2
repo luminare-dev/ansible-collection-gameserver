@@ -1,0 +1,20 @@
+# {{ ansible_managed }}
+# luminare.gameserver.gameserver_observability: loads the dashboard of gameserver-observability
+# {{ __gameserver_observability_pack.version }} from {{ gameserver_observability_grafana_dashboards_dir }}
+# into the Grafana folder "Game server". The pack's grafana/provisioning/dashboards/gameserver-observability.yml
+# with this role's dashboard folder.
+apiVersion: 1
+providers:
+  - name: gameserver-observability
+    orgId: 1
+    folder: Game server
+    folderUid: gso-game-server
+    type: file
+    # The files from the role are the source: changes made in Grafana cannot be saved over them,
+    # and a dashboard whose file is gone is not deleted from Grafana by accident.
+    disableDeletion: true
+    allowUiUpdates: false
+    updateIntervalSeconds: 60
+    options:
+      path: "{{ gameserver_observability_grafana_dashboards_dir }}"
+      foldersFromFilesStructure: false

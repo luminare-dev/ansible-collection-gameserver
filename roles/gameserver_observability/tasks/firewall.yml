@@ -1,0 +1,23 @@
+# __gameserver_observability_firewall_write (assert.yml): gameserver_observability_firewall_manage
+# is true or /etc/nftables.d exists; /etc/nftables.conf and nft were checked there.
+- name: Create the nftables drop-in directory
+  ansible.builtin.file:
+    path: "{{ __gameserver_observability_nft_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: gameserver_observability_firewall_manage | bool
+
+# The candidate file is checked together with /etc/nftables.conf before it replaces the old one,
+# so a broken rule never reaches the drop-in directory.
+- name: Write the exporter port rules (50-observability.nft)
+  ansible.builtin.template:
+    src: 50-observability.nft.j2
+    dest: "{{ __gameserver_observability_nft_dropin }}"
+    owner: root
+    group: root
+    mode: "0644"
+    validate: /bin/bash -c 'set -o pipefail; cat /etc/nftables.conf %s | nft --check --file /dev/stdin'
+  when: __gameserver_observability_firewall_write | bool
+  notify: Reload nftables for gameserver-observability

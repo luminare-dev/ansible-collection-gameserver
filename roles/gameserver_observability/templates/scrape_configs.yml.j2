@@ -1,0 +1,146 @@
+# {{ ansible_managed }}
+# luminare.gameserver.gameserver_observability: the scrape jobs of gameserver-observability
+# {{ __gameserver_observability_pack.version }} (the pack's prometheus/scrape/fxserver.yml, tunnel.yml and versions.yml),
+# with one entry per game server in gameserver_observability_targets. Everything is collected
+# from outside the server process, counts only: players.json is never a target.
+{% macro hostport(target) -%}
+{{ ('[' ~ target.address ~ ']') if ':' in (target.address | string) else target.address }}:{{ target.port | default(30120) }}
+{%- endmacro %}
+scrape_configs:
+  # /perf/ on the game port serves the tickTime histogram (basic auth from the password file).
+  - job_name: fxserver_perf
+    scrape_interval: 15s
+    metrics_path: /perf/
+    basic_auth:
+      username: "{{ gameserver_observability_perf_user }}"
+      password_file: "{{ __gameserver_observability_perf_password_file }}"
+    sample_limit: 100
+    static_configs:
+{% for target in gameserver_observability_targets %}
+      - targets: ["{{ hostport(target) }}"]
+        labels:
+          server: "{{ target.server }}"
+{% endfor %}
+    metric_relabel_configs:
+      # Keep only the tick-time histogram, whatever else a server version adds.
+      - source_labels: [__name__]
+        regex: tickTime_(bucket|sum|count)
+        action: keep
+      # tickTime_*{name="svMain"} becomes fxserver_tick_time_seconds_*{thread="svMain"}.
+      - source_labels: [__name__]
+        regex: tickTime_(bucket|sum|count)
+        target_label: __name__
+        replacement: fxserver_tick_time_seconds_$1
+      - source_labels: [name]
+        target_label: thread
+      - regex: name
+        action: labeldrop
+
+  # dynamic.json and info.json through json_exporter: client count, slots, version, OneSync.
+  - job_name: fxserver_json
+    scrape_interval: 30s
+    metrics_path: /probe
+    sample_limit: 20
+    static_configs:
+{% for target in gameserver_observability_targets %}
+      - targets: ["http://{{ hostport(target) }}/dynamic.json"]
+        labels:
+          server: "{{ target.server }}"
+          module: fxserver_dynamic
+      - targets: ["http://{{ hostport(target) }}/info.json"]
+        labels:
+          server: "{{ target.server }}"
+          module: fxserver_info
+{% endfor %}
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [module]
+        target_label: __param_module
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: "{{ __gameserver_observability_json_exporter_address }}"
+    metric_relabel_configs:
+      # The build number from the version string, e.g. "FXServer-master v1.0.0.35245 linux".
+      - source_labels: [__name__, version]
+        regex: fxserver_info;.*v[0-9]+\.[0-9]+\.[0-9]+\.([0-9]+).*
+        target_label: build
+        replacement: $1
+
+  # blackbox_exporter: the game port accepts TCP, info.json answers, /perf/ refuses anonymous
+  # requests.
+  - job_name: fxserver_blackbox
+    scrape_interval: 30s
+    metrics_path: /probe
+    sample_limit: 60
+    static_configs:
+{% for target in gameserver_observability_targets %}
+      - targets: ["{{ hostport(target) }}"]
+        labels:
+          server: "{{ target.server }}"
+          module: tcp_connect
+      - targets: ["http://{{ hostport(target) }}/info.json"]
+        labels:
+          server: "{{ target.server }}"
+          module: http_fxserver_info
+      - targets: ["http://{{ hostport(target) }}/perf/"]
+        labels:
+          server: "{{ target.server }}"
+          module: http_401_expected
+{% endfor %}
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [module]
+        target_label: __param_module
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: "{{ __gameserver_observability_blackbox_exporter_address }}"
+{% if gameserver_observability_admin_probes | length > 0 %}
+
+  # Admin hostnames behind an access-protected tunnel: without a login they must redirect or refuse.
+  - job_name: fxserver_tunnel
+    scrape_interval: 60s
+    metrics_path: /probe
+    sample_limit: 60
+    static_configs:
+{% for probe in gameserver_observability_admin_probes %}
+      - targets: ["{{ probe.url }}"]
+        labels:
+          server: "{{ probe.server }}"
+          module: http_access_protected
+{% endfor %}
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [module]
+        target_label: __param_module
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: "{{ __gameserver_observability_blackbox_exporter_address }}"
+{% endif %}
+{% if gameserver_observability_versions_job | bool %}
+
+  # The build number of the platform's current Recommended server build (public version list),
+  # for the alert FXServerBuildBehindRecommended. No server label; json_exporter needs HTTPS out.
+  - job_name: fxserver_versions
+    scrape_interval: 4m
+    metrics_path: /probe
+    sample_limit: 10
+    static_configs:
+      - targets: ["https://changelogs-live.fivem.net/api/changelog/versions/linux/server"]
+        labels:
+          module: fxserver_versions
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [module]
+        target_label: __param_module
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: "{{ __gameserver_observability_json_exporter_address }}"
+{% endif %}

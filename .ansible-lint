@@ -12,6 +12,12 @@ supported_ansible_also:
   - "2.20."
   - "2.21."
 
+# Test-only role that the lint job does not install (offline): the gameserver_observability
+# scenario's prepare.yml installs Prometheus with it, after Molecule's dependency step has
+# downloaded prometheus.prometheus. A mock lets the syntax check pass without the collection.
+mock_roles:
+  - prometheus.prometheus.prometheus
+
 exclude_paths:
   - .ansible/
   - .cache/

@@ -1,0 +1,21 @@
+- name: Converge
+  hosts: all
+  # Network facts: target game-02 and the exporters' listen address are the container's private
+  # address (molecule.yml).
+  gather_facts: true
+  vars:
+    fxserver_build: 35245
+    fxserver_artifact_url: file:///opt/fake/35245/fx.tar.xz
+    fxserver_artifact_sha256: "{{ gameserver_observability_test_fake_artifact.stat.checksum }}"
+  pre_tasks:
+    - name: Read the sha256 of the fake artifact (built in prepare.yml)
+      ansible.builtin.stat:
+        path: /opt/fake/35245/fx.tar.xz
+        checksum_algorithm: sha256
+      register: gameserver_observability_test_fake_artifact
+  # The fxserver role runs the game server (here the fake build) with /perf/ basic auth, then this
+  # role wires it into the Prometheus on the same host: game-01 over loopback as in a single-host
+  # setup, game-02 over the private address as a monitoring host would reach it.
+  roles:
+    - role: fxserver
+    - role: gameserver_observability
