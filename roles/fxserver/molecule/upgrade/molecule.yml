@@ -1,15 +1,5 @@
-# Scenario "upgrade": server-data from a git repository, then the life cycle of the build.
-#   converge     install fake build 35245 (idempotence: a second run changes nothing)
-#   side_effect  update to fake build 35246 (pre-update backup, link switch, health check), a
-#                switch whose backup fails (refused, 35246 keeps running), a run that stops at the
-#                checks because /etc/nftables.d exists without /etc/nftables.conf, the broken fake
-#                build 35247 (automatic rollback to 35246), then a rollback to 35245 by setting
-#                fxserver_build only (no download)
-#   verify       final state: 35245 active, 35246 kept for rollback, 35247 removed, no deploy key
-# Without /etc/nftables.d this scenario also proves that no firewall file is written.
-# Ansible connects as the non-root user "admin" with sudo, as on a host without root login (the
-# luminare.infra_edge base role turns it off); prepare.yml creates that user as root. The git
-# checkout runs as the service user, which needs setfacl (package acl) in this setup.
+# Scenario "upgrade": server-data from git, update 35245 -> 35246, refused switches, automatic
+# rollback of a broken build and a rollback by build number. Ansible connects as a sudo user.
 platforms:
   - name: gs-fxserver-upgrade-debian13
     image: gs-debian13
