@@ -158,7 +158,7 @@ class ScenarioListTest(unittest.TestCase):
         self.assertEqual(list(roles), sorted(roles))
         self.assertEqual(ms.duplicate_instances(ms.matrix(roles)), [])
         self.assertEqual(roles.get("fxserver"), ["default", "upgrade"])
-        # "playbook" runs playbooks/gameserver.yml with the example inventory (ADR 0017).
+        # "playbook" runs playbooks/gameserver.yml with the example inventory.
         self.assertEqual(roles.get("txadmin"), ["default", "playbook"])
         self.assertEqual(roles.get("gameserver_observability"), ["default"])
 

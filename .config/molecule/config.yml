@@ -1,22 +1,6 @@
-# Molecule base configuration, shared by every role scenario of this collection. Molecule finds it
-# at the repository root and merges each roles/<role>/molecule/<scenario>/molecule.yml on top of
-# it (lists such as "platforms" are replaced, not merged, so every scenario lists its platforms).
-#
-# A scenario declares two platforms built from molecule/resources/Dockerfile.j2:
-#   platforms:
-#     - name: gs-<role>-debian13        # "gs-" prefix keeps names unique on a shared Docker daemon;
-#                                       # write "_" in a role name as "-" (it is also the host name);
-#                                       # scenarios other than default: gs-<role>-<scenario>-debian13
-#       image: gs-debian13              # or gs-ubuntu2404; selects the digest-pinned base image
-#       dockerfile: ../../../../molecule/resources/Dockerfile.j2
-#       privileged: true
-#       cgroupns_mode: host
-#       volumes: ["/sys/fs/cgroup:/sys/fs/cgroup:rw"]
-#       tmpfs: ["/run", "/run/lock"]
-#       command: /lib/systemd/systemd
-#
-# Run one scenario:  cd roles/<role> && molecule test [--scenario-name <scenario>]
-# One platform only, as each CI job does:  molecule test --platform-name gs-<role>-debian13
+# Molecule base configuration shared by every scenario; each scenario's molecule.yml is merged on top
+# and lists its own platforms (gs-<role>[-<scenario>]-debian13 / -ubuntu2404, from molecule/resources/Dockerfile.j2).
+# Run one scenario: cd roles/<role> && molecule test [--scenario-name <scenario>] [--platform-name <instance>]
 
 # Roles are used from this checkout (ansible.cfg roles_path below), not installed as stand-alone
 # Galaxy roles, so Molecule's role-mode "prerun" install is turned off.

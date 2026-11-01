@@ -106,16 +106,14 @@ Server license keys need extra care: the platform scans public repositories for 
 leaked key has to be replaced. In examples and test data, write the placeholder
 `CHANGE_ME_LICENSE_KEY`, never a value that starts like a real key; the role refuses to start the
 server with that placeholder. CI scans every commit with gitleaks and two license-key rules in
-`.gitleaks.toml` (see [ADR 0010](adr/0010-catch-license-keys-of-any-layout.md)); a leaked secret
-is rotated first and removed from history second.
+`.gitleaks.toml`; a leaked secret is rotated first and removed from history second.
 
 The `txadmin` role takes these secrets: `txadmin_api_token`,
 `txadmin_default_account_password_hash`, the password in `txadmin_prometheus_basic_auth` and the
 values of `txadmin_deployer_prefill`. It writes the token, the hash and the pre-fill values into
 `/etc/fxserver/txadmin.env` (owner root, mode 0600), which systemd reads as root and passes to
 txAdmin as `TXHOST_*` variables; the `/perf/` password goes into `secrets.cfg` through the
-fxserver role. The role refuses `CHANGE_ME`
-placeholders for the token and the `/perf/` password, and checks every value before it writes
+fxserver role. The role refuses `CHANGE_ME` placeholders for the token and the `/perf/` password, and checks every value before it writes
 it, because txAdmin can print an invalid value to its log when it stops at boot.
 
 The `gameserver_observability` role takes one secret, `gameserver_observability_perf_password`,

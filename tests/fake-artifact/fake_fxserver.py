@@ -1,73 +1,12 @@
 #!/usr/bin/env python3
 """Fake game server for tests: a stand-in for FXServer and txAdmin, not the real software.
 
-The Molecule scenarios install a fake artifact (fx.tar.xz, built by build.py next to this file)
-instead of a real server build, so that the fxserver role's systemd unit really starts and the
-tests can query the same HTTP endpoints as on a real server. Python 3 standard library only; every
-answer is synthetic.
-
-Command line, as the role's unit passes it through run.sh (working directory = server-data):
-
     fake_fxserver.py +exec <file> [+set <name> <value>] ...   game server only ("plain" mode)
     fake_fxserver.py                                           txAdmin mode (no +exec)
 
-Like the real launcher, the fake starts txAdmin when the command line has no "+exec" argument.
-
-Config files are read like the real server reads them: one command per line, "#" and "//" start
-comments, values may be quoted. The fake understands:
-
-    endpoint_add_tcp "<address>:<port>"      where to listen (default 0.0.0.0:30120)
-    exec <file>                              run another file (for example secrets.cfg)
-    sv_licenseKey "<value>"                  required, as on the real server; never printed
-    set|sets|setr <name> <value>             convars, e.g. sv_projectName, onesync,
-                                             sv_prometheusBasicAuthUser/Password (protect /perf/)
-    sv_hostname, sv_maxclients, ...          any other "sv_<name> <value>" line is a convar too
-    ensure|start <resource>                  listed in /info.json
-
-Game server HTTP endpoints:
-
-    /info.json      server string with the build number, convars, resources
-    /dynamic.json   player count ("clients") and sv_maxclients
-    /players.json   synthetic players (player-1, license:000...1, ...)
-    /perf/          Prometheus text (tickTime histograms). When sv_prometheusBasicAuthUser or
-                    sv_prometheusBasicAuthPassword is set, only with exactly these HTTP basic
-                    auth credentials (401 otherwise); when both are empty, to anyone, as build
-                    35245 does (PerfHttpHandler.cpp; the fake has no rate limit)
-
-txAdmin mode reads the TXHOST_* environment variables with the rules of txAdmin 8.1.1
-(core/boot/getHostVars.ts and core/globalData.ts): a value in quotes or an invalid value stops
-it with exit status 1 (the fake names the variable but, unlike txAdmin, never prints the value).
-It then behaves like a txAdmin whose one-time web setup is done, with server-data = the working
-directory and server.cfg as the config file:
-
-    TXHOST_DATA_PATH        txData folder (absolute; default: txData next to run.sh); the fake
-                            creates it and, with TXHOST_DEFAULT_ACCOUNT, writes admins.json (0600)
-    TXHOST_TXA_PORT         web port (default 40120; 30120 is refused)
-    TXHOST_INTERFACE        IPv4 address for the web port (default 0.0.0.0); when set, every
-                            endpoint_add_tcp in server.cfg must use it or the game server is not
-                            started (as txAdmin does)
-    TXHOST_FXS_PORT         when set, the game port in server.cfg must equal it
-    TXHOST_MAX_SLOTS        when set, sv_maxclients must not exceed it
-    TXHOST_QUIET_MODE       "true": the game server's output is not printed
-    TXHOST_API_TOKEN        token for /host/status ("disabled" = no token needed)
-    TXHOST_DEFAULT_ACCOUNT  username:fivemId[:bcrypt hash], at least an id or a hash
-    TXHOST_GAME_NAME, TXHOST_TXA_URL, TXHOST_PROVIDER_NAME, TXHOST_DEFAULT_DB*,
-    TXHOST_DEFAULT_CFXKEY, TXHOST_IGNORE_DEPRECATED_CONFIGS: checked or accepted, not used
-
-txAdmin web endpoints (on TXHOST_INTERFACE:TXHOST_TXA_PORT):
-
-    /, /login       a fake page (status 200), like txAdmin before and after its setup
-    /host/status    with the token in the header x-txadmin-envtoken or the query ?envtoken=:
-                    isConfigured, status ONLINE/OFFLINE, playerCount, playerSlots, ...; like
-                    txAdmin it answers status 200 with {"error": ...} for a missing, wrong or
-                    unconfigured token
-
-The game server keeps running inside the same process; a game server that cannot start (no
-license key, a refused endpoint or slot count) leaves txAdmin running with status OFFLINE, as the
-real txAdmin does.
-
-Environment: FAKE_CLIENTS (number of synthetic players, default 3). The build number is read
-from the file "build" next to this script (build.py writes it).
+It reads server.cfg like the real server, answers /info.json, /dynamic.json, /players.json and
+/perf/ with synthetic data, and in txAdmin mode checks the TXHOST_* variables with the rules of
+txAdmin 8.1.1. Never prints secrets. See README.md next to this file. Standard library only.
 """
 
 from __future__ import annotations

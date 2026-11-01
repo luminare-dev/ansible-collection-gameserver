@@ -1,11 +1,5 @@
-# Reusable release: release-please keeps a release pull request open; merging it creates a draft
-# GitHub release and the vX.Y.Z tag. The same run then builds the source archive (plus any
-# archives of the extra-dist-command input), writes SHA256SUMS, attests the archives (SLSA build
-# provenance), attaches the files and publishes the release. Everything happens in one run
-# because a tag or release created with GITHUB_TOKEN does not trigger other workflows.
-#
-# The release is created as a draft (release-please-config.json: draft + force-tag-creation) and
-# published only after every file is attached, so it also works with immutable releases turned on.
+# Reusable release: release-please PR, then a draft release with archives, SHA256SUMS and provenance
+# attestations, published once every file is attached (all in one run, as GITHUB_TOKEN events don't chain).
 name: reusable-release
 
 on:
