@@ -115,9 +115,7 @@ the platform scans public repositories for keys.
 `gameserver_observability_firewall_manage` is `true`), so the role writes its drop-in
 (`45-fxserver.nft` or `50-observability.nft`), but `/etc/nftables.conf` is missing, does not
 define `table inet filter` or lacks the line `include "/etc/nftables.d/*.nft"`, or `nft` is not
-installed. The
-`/etc/nftables.conf` of the nftables package has no include line: a drop-in would pass
-`nft --check` there but never be loaded. The message names what is missing; nothing was changed.
+installed. The message names what is missing; nothing was changed.
 
 **Fix:** set up the firewall layout of the `luminare.infra_edge` base role, or write an
 `/etc/nftables.conf` of that shape. Remove an unused `/etc/nftables.d` when the host has no
@@ -130,9 +128,7 @@ refuses requests to `/info.json`, `/dynamic.json` and `/players.json` that carry
 which proxies add; at 2 or higher also requests with an `Upgrade-Insecure-Requests` header, which
 browsers send. It answers "Nope." and then refuses new connections from the sending address
 (IPv4 loopback excepted) until the server restarts. The role's health check sends neither header
-and connects to 127.0.0.1. (The platform documentation says that from level 2 every request to
-these endpoints answers "Nope."; the server source of build 35245 refuses only requests with one
-of these headers.)
+and connects to 127.0.0.1.
 
 **Fix:** query the endpoints with a client that sends neither header (`curl`, a monitoring
 probe) and not through a proxy that adds `Via`; `systemctl restart fxserver` clears the blocked

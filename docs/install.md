@@ -1,9 +1,7 @@
 # Installation
 
 The collection is installed on the Ansible controller. Install it from a release tag with git, or
-from the collection tarball attached to the GitHub release. The git, `requirements.yml` and
-tarball installs below were checked on 2026-10-21 with ansible-core 2.21.5, against a local clone
-of this repository and a tarball built from it.
+from the collection tarball attached to the GitHub release.
 
 ## Requirements
 
@@ -76,8 +74,7 @@ The output names the collection path and the installed version, for example
 The playbook `luminare.gameserver.gameserver` runs the `fxserver` role and, with
 `fxserver_mode: txadmin`, the `txadmin` role on every host of the group `gameservers`, one host
 at a time. The example inventory in `examples/inventory/` sets it up for one host in txAdmin
-mode; the Molecule scenario `roles/txadmin/molecule/playbook` runs exactly this inventory on
-every pull request, with test values for the placeholders and a fake server build.
+mode.
 
 1. Set up the firewall layout on the host (see Requirements): run the `luminare.infra_edge` base
    role, or write such an `/etc/nftables.conf` yourself. In txAdmin mode the playbook checks it

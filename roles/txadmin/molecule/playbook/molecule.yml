@@ -1,16 +1,6 @@
-# Scenario "playbook": the collection playbook playbooks/gameserver.yml
-# (luminare.gameserver.gameserver) with the settings of the example inventory: the group_vars of
-# examples/inventory/ are linked into Molecule's inventory and the instances are in the group
-# "gameservers", as the example host is. converge.yml replaces only what a test host cannot have:
-# the placeholders of secrets.yml (a dummy license key and the values in vars/test-values.yml)
-# and the real server build (the fake build 35245 from tests/fake-artifact/). prepare.yml sets up
-# the host with tests/e2e/prepare.yml, and verify.yml runs tests/e2e/check.yml (the two host
-# playbooks of the end-to-end run, .github/workflows/e2e.yml), checks the example's settings on
-# the host and shows that the unchanged example, with its placeholders, and a firewall layout
-# without the drop-in include (the playbook's pre-check) are refused before any change. The
-# scenario lives in the txadmin role because the CI matrix lists scenarios per role, and txadmin
-# is the last role of the playbook (ADR 0017). Shared settings (driver, sequence with
-# idempotence, roles path) come from .config/molecule/config.yml.
+# Scenario "playbook": runs playbooks/gameserver.yml with the example inventory (placeholders and
+# the build replaced by test values), the e2e host checks, and the refusals of the unchanged example.
+# It lives here because txadmin is the last role of the playbook.
 platforms:
   - name: gs-txadmin-playbook-debian13
     image: gs-debian13

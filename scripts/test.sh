@@ -1,14 +1,6 @@
 #!/usr/bin/env bash
-# The repository's test command: ansible-lint (production profile), the check of the vendored
-# gameserver-observability files and the unit tests.
-# CI runs it in the lint-test job (ci.yml) and on the release tag (release.yml). Locally, run it
-# from any directory with the tools of requirements-test.txt (and gitleaks) on the PATH:
-#
-#   bash scripts/test.sh
-#
-# In CI (CI=true) it first installs the hash-pinned Python tools into a fresh virtual environment
-# under $RUNNER_TEMP/test-tools and the sha256-pinned gitleaks binary, so that the gitleaks rule
-# tests run instead of being skipped. Molecule runs in its own CI jobs (molecule-scenario).
+# The repository's test command (CI lint-test and the release): ansible-lint, the vendored pack check
+# and the unit tests. With CI=true it first installs the pinned tools.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

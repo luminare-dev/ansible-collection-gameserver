@@ -1,10 +1,5 @@
-# Scenario "default": the fxserver role with fxserver_mode txadmin and the fake build 35245
-# (tests/fake-artifact/), then this role. The fake starts like txAdmin when run.sh has no +exec:
-# it reads the TXHOST_* variables, answers on the web port and starts the fake game server.
-# Both nftables drop-ins are loaded in the container's own network namespace, so verify.yml can
-# show that the web port is closed to a source outside txadmin_firewall_sources while the game
-# port stays open. Shared settings (driver, sequence with idempotence, roles path) come from
-# .config/molecule/config.yml.
+# Scenario "default": the fxserver role in txAdmin mode with the fake build, then this role.
+# Both drop-ins are loaded in the container's network namespace to test port 40120 from outside.
 platforms:
   - name: gs-txadmin-debian13
     image: gs-debian13

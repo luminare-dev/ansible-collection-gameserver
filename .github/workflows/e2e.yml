@@ -1,15 +1,5 @@
-# Manual end-to-end run on a throwaway cloud server (docs/e2e.md): a CX23 server whose cloud
-# firewall admits only this runner, the real server build 35245 with a real license key, the
-# playbook luminare.gameserver.gameserver with the example inventory (first with fxserver_mode
-# plain, then as the example has it, with txAdmin), two runs per mode with changed=0 on the
-# second, checks on the server (tests/e2e/check.yml) and from this runner, the timings in the job
-# summary, and every resource it created deleted at the end, whatever happened before.
-#
-# It only runs when started by hand, in the protected environment "e2e" (required reviewer), with
-# the environment secrets HCLOUD_TOKEN (a token of a cloud project used for nothing else) and
-# FXSERVER_LICENSE_KEY. Without the repository variable E2E_ENABLED set to "true" the job is
-# skipped, so the workflow stays green while those secrets do not exist. Forks cannot use this
-# repository's environment or secrets.
+# Manual end-to-end run of the playbook with the real build on a throwaway cloud server (docs/e2e.md).
+# Runs only by hand in the protected environment "e2e" and is skipped unless E2E_ENABLED is "true".
 name: e2e
 
 on:

@@ -1,54 +1,14 @@
 # luminare.gameserver.fxserver
 
 Installs a game server build (FXServer, for FiveM/RedM servers) on Debian 13 or Ubuntu 24.04 and
-runs it as a hardened systemd service, either directly with `server.cfg` or under txAdmin, the
-admin panel that ships with the build (`fxserver_mode`). It updates and rolls back by switching
-one symbolic link, checks the server after every switch, and backs up server-data and txData
-before every switch and, if you want, every night.
+runs it as a hardened systemd service, either directly with `server.cfg` or under txAdmin
+(`fxserver_mode`). Updates and rollbacks switch one symbolic link; the server is checked after
+every switch and a build that does not answer is rolled back. server-data and txData are backed
+up before every switch and, optionally, every night.
 
 Not affiliated with or endorsed by Cfx.re, Rockstar Games or Take-Two.
 
-## What the role does
-
-1. Checks the settings: platform (Debian or Ubuntu on x86_64), port, limits from the platform
-   documentation for `server.cfg` (and no quotes or line breaks in its quoted values), the
-   license key (never shown; empty or the placeholder `CHANGE_ME_LICENSE_KEY` is refused when
-   the server is to run) and, when the firewall drop-in is to be written, `nft` and an
-   `/etc/nftables.conf` that includes `/etc/nftables.d/*.nft`. A failed check stops the run
-   before any change.
-2. Installs `ca-certificates`, `tar`, `xz-utils` and `zstd`, plus `git` and `acl` with
-   `fxserver_server_data_repo` and `nftables` with `fxserver_firewall_manage: true`. It creates the
-   system user and group `fxserver` (no login shell) and the directories. `acl` provides
-   `setfacl`, which Ansible needs to run the git checkout as the service user when it connects
-   as a non-root user (for example on a host without root login).
-3. Downloads the build from `fxserver_artifact_url` only when it is not on disk yet, checks it
-   against `fxserver_artifact_sha256` (required), unpacks it into a temporary directory and moves
-   it to `artifacts/<build>/` in one step. The downloaded archive is deleted afterwards.
-4. Sets the journald retention (`MaxRetentionSec`, default 14 days), writes the nftables drop-in
-   `/etc/nftables.d/45-fxserver.nft` for the game port and installs the hardened unit
-   `fxserver.service`, which starts `run.sh +exec server.cfg` (`plain`) or `run.sh` alone, which
-   starts txAdmin (`txadmin`, see [Running under txAdmin](#running-under-txadmin)).
-5. Installs `/usr/local/sbin/fxserver-backup`, `fxserver-backup.service` and
-   `fxserver-backup.timer`.
-6. When the build changes: stops the server and runs a backup (`pre-update-<old>-to-<new>`)
-   before it writes anything below server-data, so the archive holds server-data, `secrets.cfg`
-   and txData from before this run. A failed backup stops the run and starts the old build again
-   (if it was running).
-7. Writes server-data: a git checkout of `fxserver_server_data_repo` as the service user, or a
-   minimal `server.cfg` from `fxserver_cfg`. A deploy key is written only for the checkout and
-   removed right after it, also when the checkout fails. It writes `secrets.cfg` (mode 0600,
-   `no_log`) with the license key and the `/perf/` credentials (see [`/perf/`](#perf)) and checks
-   that `server.cfg` contains the line `exec secrets.cfg`. If this step fails after the server
-   was stopped for the backup, the role starts the old build again and stops the run.
-8. When the build changes: points `artifacts/previous` at the old build and replaces
-   `artifacts/current` with one `rename(2)`.
-9. Restarts the server when the build, the unit, `server.cfg` or `secrets.cfg` changed. On every
-   run that leaves the server started it then waits until `fxserver_healthcheck_url` (default
-   `/info.json` on the game port, or txAdmin's web page under txAdmin) answers with status 200. If that fails within
-   `fxserver_healthcheck_timeout` seconds after a switch, the role switches back to the old build,
-   restarts it, checks it again and fails the run with a message that names both builds.
-10. Removes builds beyond `fxserver_keep_builds` (never the active one; the previous one second)
-    and writes the textfile metrics.
+All settings are checked before the first change, and the license key is never printed.
 
 ## Layout on the host
 
@@ -98,10 +58,6 @@ without it the role writes a random password, so `/perf/` is closed to everyone.
 Without `fxserver_server_data_repo` the role writes a minimal `server.cfg` (connect button
 disabled, no resources) from `fxserver_cfg`, for example
 `fxserver_cfg: {hostname: "Test server", max_clients: 16, resources: [my-resource]}`.
-
-The collection also ships a complete play: the playbook `luminare.gameserver.gameserver` runs this
-role and the txadmin role with the example inventory in `examples/inventory/` (see
-[Run the playbook](../../docs/install.md#run-the-playbook)).
 
 ## Variables
 
@@ -159,8 +115,8 @@ Keys of `fxserver_cfg` (unknown keys are refused; the text values are written in
 | `max_clients` | `32` | `sv_maxclients` (1-2048; from 32 `onesync` must be `on` or `legacy`, above 64 `on`) |
 | `onesync` | `"on"` | `set onesync` (`on`, `legacy` or `off`) |
 | `enforce_game_build` | `""` | `sv_enforceGameBuild` (left out when empty) |
-| `master1_disabled` | `true` | `sv_master1 ""`: disables the connect button in the server browser. It does **not** de-list the server (see [Limitations](#limitations)). |
-| `lan` | `false` | `sv_lan true` when `true`: LAN-only, the server does not appear in the public server list. The platform documentation says that this mode also skips the license key check; the role still requires `fxserver_license_key`. |
+| `master1_disabled` | `true` | `sv_master1 ""`: disables the connect button in the server browser. It does **not** de-list the server; use `lan` for that. |
+| `lan` | `false` | `sv_lan true` when `true`: LAN-only, the server does not appear in the public server list. The role still requires `fxserver_license_key`. |
 | `appear_allowlisted` | `true` | `sets sv_appearAllowlisted true`: a lock icon in the server browser |
 | `request_paranoia` | `1` | `set sv_requestParanoia` (0-3): 1 blocks JSON requests with a `Via` header (proxies), 2 also those with `Upgrade-Insecure-Requests` (browsers); they get "Nope." and the address is blocked. The health check sends neither header. |
 | `resources` | `[]` | one `ensure <resource>` line each (letters, digits, `_`, `.` and `-`) |
@@ -170,181 +126,69 @@ The template also writes `sv_scriptHookAllowed 0`, and no `rcon_password` (the r
 stays off). It leaves out `sv_endpointPrivacy`: builds from July 2026 on (35245 included) never
 show player addresses on the HTTP endpoints and print a warning when the setting is set to true.
 
-### Why `server.cfg` is minimal
-
-The template sets what the role needs to run and check the server (endpoints, names, slots,
-OneSync, the HTTP endpoint settings above) and nothing that changes gameplay. Settings such as
-`sv_pureLevel`, `sv_entityLockdown`, `sv_filterRequestControl`, `sv_enableNetworkedSounds` and
-`sv_enableNetworkedScriptEntityStates` limit what clients and resources may do, so the right
-values depend on the resources a server runs: entity lockdown, for example, blocks entities that
-client scripts create, which many resources do. None of them was tested with a real build here.
-Add them with `extra_lines` after checking them against your resources, for example:
-
-```yaml
-fxserver_cfg:
-  extra_lines:
-    - sv_pureLevel 1
-    - set sv_entityLockdown relaxed
-    - set sv_filterRequestControl 2
-    - set sv_enableNetworkedSounds false
-    - set sv_enableNetworkedScriptEntityStates false
-```
-
-A server-data repository (`fxserver_server_data_repo`) brings its own `server.cfg` instead.
+The template also writes `sv_scriptHookAllowed 0` and no `rcon_password`. Gameplay-related
+settings (`sv_pureLevel`, `sv_entityLockdown`, ...) depend on your resources, so add them with
+`extra_lines` if you want them. A server-data repository brings its own `server.cfg` instead.
 
 ## `/perf/`
 
-`/perf/` on the game port serves the server's tick-time metrics. Build 35245 answers it to anyone
-when `sv_prometheusBasicAuthUser` and `sv_prometheusBasicAuthPassword` are both empty (its source,
-`PerfHttpHandler.cpp`), so `secrets.cfg` always sets both:
-
-- with `fxserver_perf_password` (or the txadmin role's observability toggle), that password and
-  `fxserver_perf_user`;
-- without it, the password that `secrets.cfg` already has from an earlier run, or on the first
-  run a random password of 32 letters and digits. It stays in `secrets.cfg` on the host, so later
-  runs keep it (`changed=0`); nothing that scrapes `/perf/` knows it.
-
-To collect the metrics, set `fxserver_perf_password` from an encrypted variables file and give
-Prometheus the same value (the `gameserver_observability` role's
-`gameserver_observability_perf_password`).
+The server answers `/perf/` to anyone when no basic auth is set, so `secrets.cfg` always sets it:
+`fxserver_perf_password` (or the txadmin role's toggle) if given, otherwise a random password that
+stays on the host. To scrape `/perf/`, set `fxserver_perf_password` and give Prometheus the same
+value (`gameserver_observability_perf_password`).
 
 ## Updates and rollbacks
 
-- **Update:** set `fxserver_build`, `fxserver_artifact_url` and `fxserver_artifact_sha256` of the
-  new build together and run the playbook. The role backs up, switches, restarts and checks; a
-  build that does not answer is rolled back automatically.
-- **Rollback:** set `fxserver_build` to the previous build and run the playbook. The build is
-  still on disk (it is the `previous` link), so nothing is downloaded and the URL and checksum are
-  not used. On the host itself the same switch is one command; see the
-  [upgrade guide](../../docs/upgrade.md), which also covers the Recommended-build policy and how
-  to read the support window of a build from the version API.
+- **Update:** set `fxserver_build`, `fxserver_artifact_url` and `fxserver_artifact_sha256`
+  together and run the playbook.
+- **Rollback:** set `fxserver_build` to the previous build; it is still on disk, so nothing is
+  downloaded.
+
+See the [upgrade guide](../../docs/upgrade.md) for finding the Recommended build and rolling back
+by hand.
 
 ## Running under txAdmin
 
-With `fxserver_mode: txadmin` the unit starts `run.sh` without `+exec`; the server build then
-starts txAdmin instead of the game server (the server's launcher does this whenever `+exec` is
-missing). The unit also sets `TXHOST_DATA_PATH` to `fxserver_txdata_dir`, so txAdmin keeps its
-data in `/opt/fxserver/txData` from its first start on, inside the backups. txAdmin starts the
-game server only after its one-time web setup, in which you choose `fxserver_server_data_dir`
-and `server.cfg`; until then nothing answers on the game port. The default health check
-therefore waits for txAdmin's web page (`http://127.0.0.1:40120/`) instead of `/info.json`. The
-role still writes `server.cfg` (or checks out your repository) and `secrets.cfg`, which txAdmin's
-server runs.
-
-Configure txAdmin itself (port, default account, API token, firewall drop-in for port 40120) with
-[`luminare.gameserver.txadmin`](../txadmin/README.md) right after this role. A game port of
-40120-40150 is refused in this mode, because txAdmin keeps that range for itself.
+With `fxserver_mode: txadmin` the unit starts `run.sh` without `+exec`, which starts txAdmin, and
+sets `TXHOST_DATA_PATH` to `fxserver_txdata_dir`. txAdmin starts the game server only after its
+one-time web setup, so the health check waits for txAdmin's web page instead of `/info.json`.
+Configure txAdmin with [`luminare.gameserver.txadmin`](../txadmin/README.md) right after this role.
+Game ports 40120-40150 are refused in this mode.
 
 ## Backups
 
-`fxserver-backup [label]` writes `fxserver-<UTC time>-<label>.tar.zst` into
-`fxserver_backup_dir` (root only; the archives contain `secrets.cfg`) and keeps the newest
-`fxserver_backup_keep` archives. It archives `fxserver_backup_paths` without
-`fxserver_backup_exclude`. The role runs it with the server stopped before every build switch,
-before that run writes server-data or `secrets.cfg`;
-`fxserver_backup_timer_enabled: true` adds a daily run while the server runs (GNU tar's
-"file changed as we read it" is reported, not fatal). With `fxserver_textfile_dir` set, every
-backup updates `fxserver_backup_last_success_timestamp_seconds`.
-
-These archives stay on the same disk. For backups that survive the host, point an off-host tool
-at the same paths, for example restic:
+`fxserver-backup [label]` writes `fxserver-<UTC time>-<label>.tar.zst` into `fxserver_backup_dir`
+(root only; the archives contain `secrets.cfg`) and keeps the newest `fxserver_backup_keep`. For
+copies off the host, point a tool such as restic at the same paths:
 
 ```bash
 restic backup /opt/fxserver/server-data /opt/fxserver/txData \
   --exclude /opt/fxserver/server-data/cache
 ```
 
-To restore an archive (`--zstd` needs the `zstd` package, which the role installs):
-
-```bash
-systemctl stop fxserver
-tar --zstd --extract --preserve-permissions --file /var/backups/fxserver/<archive>.tar.zst --directory /
-systemctl start fxserver
-```
-
-The archive is extracted over the current files; to get an exact copy, move the old
-`server-data` and `txData` aside first. The [runbook](../../docs/runbook.md) has the full steps,
-which the `default` scenario runs on its newest archive.
+Restoring is described in the [runbook](../../docs/runbook.md#restore-a-backup-of-server-data-and-txdata).
 
 ## Firewall
 
-The role follows the firewall layout of the `luminare.infra_edge` base role: `/etc/nftables.conf`
-defines `table inet filter` with input policy drop and includes `/etc/nftables.d/*.nft` last. The
-drop-in `45-fxserver.nft` holds only `add rule inet filter input … accept` lines for the game port
-(tcp and udp) from `fxserver_firewall_sources`. Each new version of the file is checked together
-with `/etc/nftables.conf` (`nft --check`) before it replaces the old one; then `nftables.service`
-is restarted. Without `/etc/nftables.d` and with `fxserver_firewall_manage: false` the role writes
-no firewall file. When it writes the file but `/etc/nftables.conf`, its `table inet filter`, its
-line `include "/etc/nftables.d/*.nft"` or the `nft` command is missing, the role stops at its
-first checks, before it changes anything, and says what is missing. Without the include line (as
-in the `/etc/nftables.conf` of the nftables package) the drop-in would pass `nft --check` but
-never be loaded.
+The role follows the layout of the `luminare.infra_edge` base role: `/etc/nftables.conf` defines
+`table inet filter` and includes `/etc/nftables.d/*.nft`. The drop-in `45-fxserver.nft` only
+accepts the game port from `fxserver_firewall_sources`, and it is checked with `nft --check`
+before it replaces the old one. Without `/etc/nftables.d` (and `fxserver_firewall_manage: false`)
+no firewall file is written.
 
 ## Metrics
 
-With `fxserver_textfile_dir` set, the role writes `fxserver_artifact.prom` for the node_exporter
-textfile collector:
-
-```text
-fxserver_artifact_build 35245
-fxserver_artifact_installed_timestamp_seconds 1792540800
-```
-
-`fxserver_artifact_installed_timestamp_seconds` is the time of the `current` link, so it changes
-only when that link is replaced. No metric has labels.
+With `fxserver_textfile_dir` set, the role writes `fxserver_artifact_build`,
+`fxserver_artifact_installed_timestamp_seconds` and
+`fxserver_backup_last_success_timestamp_seconds` for the node_exporter textfile collector.
 
 ## Tests
 
-Two Molecule scenarios run in systemd containers on Debian 13 and Ubuntu 24.04 with a fake build
-(`tests/fake-artifact/`: a stand-in for the server that answers `/info.json`, `/dynamic.json`,
-`/players.json` and `/perf/` with synthetic data). No real server build is downloaded.
-
-- `default` (Ansible connects as root): a first install with the templated `server.cfg` (LAN
-  mode on), the nftables drop-in (validated with `nft --check`), metrics and the backup timer;
-  idempotence; then the unit, its hardening, the endpoints, `/perf/` basic auth, owners and
-  modes, the metrics, the drop-in content, the journald retention, the absence of the key in the
-  journal, four timer backups (three kept, no cache folder, mode 0600), and the runbook's restore
-  of the newest archive (owners, modes and `secrets.cfg` restored, the server answers again).
-- `upgrade` (Ansible connects as a non-root user with sudo, as on a host without root login):
-  server-data from a git repository, with a dummy deploy key that must be gone afterwards, and
-  no `/perf/` password; install 35245, idempotence, update to 35246 together with a new
-  server-data commit (the backup holds the old `server.cfg`, the switch, the health check), a
-  switch whose backup fails (refused), runs that stop at their checks (`/etc/nftables.d` without
-  `/etc/nftables.conf`, an `/etc/nftables.conf` without the drop-in include, a quote or a line
-  break in `fxserver_cfg`, a resource name with other characters), the broken build 35247
-  (rolled back to 35246 automatically), then a rollback to 35245 by setting `fxserver_build`
-  only; at the end `/perf/` refuses a request without credentials and answers with the random
-  password from `secrets.cfg`.
-
-The scenario of the [txadmin role](../txadmin/README.md#tests) runs this role with
-`fxserver_mode: txadmin` (the fake build then behaves like txAdmin) and checks the unit, the
-health check on txAdmin's web page and the `/perf/` toggle.
-
 ```bash
 cd roles/fxserver
-molecule test                    # default scenario, both platforms
-molecule test -s upgrade         # update and rollback scenario
+molecule test                    # default scenario
+molecule test -s upgrade         # update and rollback
 ```
 
-## Limitations
-
-- Tested only with the fake build. The unit's hardening (`ProtectSystem=strict`,
-  `NoNewPrivileges` and the others) has not been run against a real, keyed server build.
-- Under txAdmin (`fxserver_mode: txadmin`) the health check shows only that txAdmin answers;
-  whether the game server runs depends on txAdmin's one-time web setup, which is manual.
-- In containers the nftables ruleset is validated but not loaded, so the effect of the drop-in on
-  traffic is not proven by the tests.
-- A server with a valid license key appears in the public server list unless it runs LAN-only
-  (`lan: true`, `sv_lan true`). According to the platform documentation, `sv_master1 ""`
-  (`master1_disabled`) only disables the connect button and cannot de-list a server, and
-  `sv_appearAllowlisted` only shows a lock icon. Outside LAN mode the `hostname`,
-  `project_name` and `project_desc` of every keyed server are therefore public: give a test
-  server a neutral name and description. LAN mode was tested with the fake build only, so its
-  effect on a real server (listing, license key check, who may connect) was not observed here.
-- Without `fxserver_perf_password` the random password closes `/perf/` according to the source of
-  build 35245; a real build's answer was not probed (the fake build answers like the source).
-- Backups stay on the host; copying them elsewhere (restic or similar) is up to you.
-- While the role checks out server-data, the deploy key is a file of the service user, so a
-  running server could read it during that time; use a read-only deploy key. The checkout over
-  SSH is not tested: the scenario uses a local repository, for which the key is written and
-  removed but not used.
+Both scenarios use a fake server build (`tests/fake-artifact/`), so the hardened unit has not been
+run against a real build yet.

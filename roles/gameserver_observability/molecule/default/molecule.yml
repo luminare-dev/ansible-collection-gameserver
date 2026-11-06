@@ -1,11 +1,5 @@
-# Scenario "default": the fake build 35245 (tests/fake-artifact/) under the fxserver role with
-# /perf/ basic auth, Prometheus 3.15.0 installed in prepare.yml by the prometheus role of
-# prometheus.prometheus (the "existing Prometheus"), and this role on the same host. The two
-# targets reach the same fake server over loopback (game-01, the single-host setup) and over the
-# container's private address (game-02, as a monitoring host reaches a game server over a private
-# network); the exporters listen on that private address, so the firewall drop-in has rules.
-# verify.yml queries Prometheus' API. Shared settings (driver, sequence with idempotence, roles
-# path) come from .config/molecule/config.yml.
+# Scenario "default": fake build with /perf/ basic auth, Prometheus from prometheus.prometheus and
+# this role on one host, with a loopback and a private-address target. verify.yml uses Prometheus' API.
 dependency:
   name: galaxy
   options:

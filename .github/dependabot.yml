@@ -1,13 +1,5 @@
-# Dependabot version updates (https://docs.github.com/en/code-security/dependabot).
-# Keeps current: the SHA pins of the workflow actions and their "# vX.Y.Z" comments; the
-# hash-pinned Python tools in requirements-dev.txt and requirements-test.txt (the latter is
-# recompiled from requirements-test.in with pip-compile); the digest-pinned base images in
-# molecule/resources/Dockerfile.j2, as digest updates of the same tags only (debian:trixie and
-# ubuntu:24.04 are the supported platforms, so a move to a newer release is a pull request made
-# by hand, not a version bump). A 7-day cooldown lets a bad release surface before it lands
-# here. Not seen by Dependabot, so bumped by hand once a month: the gitleaks and actionlint
-# downloads (version + sha256 in the reusable workflows and scripts/test.sh) and the collections
-# in molecule/requirements.yml.
+# Dependabot: action SHA pins, the hash-pinned Python tools and the base image digests (7-day cooldown).
+# gitleaks, actionlint and molecule/requirements.yml are bumped by hand.
 version: 2
 updates:
   - package-ecosystem: github-actions
