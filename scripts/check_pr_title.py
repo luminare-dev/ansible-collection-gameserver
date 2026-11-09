@@ -26,8 +26,9 @@ from forbidden_words import check_string  # noqa: E402
 TYPES = ("feat", "fix", "docs", "refactor", "perf", "test", "style", "build", "ci", "chore", "revert", "security")
 TITLE_RE = re.compile(r"^(?P<type>[a-z]+)(?:\((?P<scope>[a-z0-9][a-z0-9._/-]*)\))?(?P<bang>!)?: (?P<subject>\S.*)$")
 MAX_LENGTH = 100
+DEPENDABOT_MAX_LENGTH = 120
 # Bots whose titles follow Conventional Commits but start the summary with a capital ("Bump ...").
-# Only the lower-case rule is relaxed for them; format, types, length and wording still apply.
+# Their generated update titles can be longer than the standard limit.
 CAPITALISED_SUMMARY_OK = ("dependabot[bot]",)
 
 
@@ -47,8 +48,9 @@ def problems(title: str, author: str = "") -> list[str]:
         if (subject[:1].isupper() and not subject.split()[0].isupper()
                 and author not in CAPITALISED_SUMMARY_OK):
             out.append("the summary must start with a lower-case letter (imperative mood: 'add', 'fix')")
-    if len(title) > MAX_LENGTH:
-        out.append(f"the title is {len(title)} characters long; keep it to {MAX_LENGTH}")
+    max_length = DEPENDABOT_MAX_LENGTH if author in CAPITALISED_SUMMARY_OK else MAX_LENGTH
+    if len(title) > max_length:
+        out.append(f"the title is {len(title)} characters long; keep it to {max_length}")
     out += [f"wording: {e.split(': ', 1)[-1]}" for e in check_string(title)]
     return out
 
