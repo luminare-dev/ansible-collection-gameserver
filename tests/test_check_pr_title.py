@@ -44,6 +44,16 @@ class TitleTest(unittest.TestCase):
         self.assertTrue(pt.problems("Bump the actions group", "dependabot[bot]"))
         self.assertTrue(any(p.startswith("wording") for p in pt.problems("ci(deps): Bump the pro version", "dependabot[bot]")))
 
+    def test_dependabot_generated_titles_have_a_bounded_length_allowance(self):
+        title = (
+            "test(deps): Bump ubuntu from `68ee220` to `fe81560` in /molecule/resources "
+            "in the molecule-images group"
+        )
+        self.assertEqual(len(title), 103)
+        self.assertEqual(pt.problems(title, "dependabot[bot]"), [])
+        self.assertTrue(pt.problems(title, "someone"))
+        self.assertTrue(pt.problems("ci(deps): Bump " + "x" * 110, "dependabot[bot]"))
+
     def test_offer_wording_is_rejected(self):
         """Release notes are built from the titles, so they must be offer-free too."""
         for title in ("feat: add pro version toggle", "docs: add donation link", "feat: coming soon page",
