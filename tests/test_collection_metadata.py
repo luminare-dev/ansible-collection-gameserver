@@ -124,7 +124,7 @@ class MoleculeSetupTest(unittest.TestCase):
 
     def test_cleaning_apt_lists_invalidates_the_cache_timestamp(self):
         text = (ROOT / "molecule" / "resources" / "Dockerfile.j2").read_text(encoding="utf-8")
-        self.assertIn("/var/lib/apt/periodic/update-success-stamp", text)
+        self.assertIn("rm -rf /var/lib/apt/lists /var/lib/apt/periodic/update-success-stamp", text)
 
     def test_scenarios_use_the_shared_image_and_prefixed_names(self):
         scenarios = sorted(ROOT.glob("roles/*/molecule/*/molecule.yml"))

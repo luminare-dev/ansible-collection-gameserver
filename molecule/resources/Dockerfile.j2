@@ -28,7 +28,7 @@ RUN apt-get update \
         systemd \
         systemd-sysv \
     && apt-get clean \
-    && rm -rf /var/lib/apt/lists/* /var/lib/apt/periodic/update-success-stamp \
+    && rm -rf /var/lib/apt/lists /var/lib/apt/periodic/update-success-stamp \
     && rm -f /lib/systemd/system/multi-user.target.wants/getty.target \
     && systemctl mask getty.target console-getty.service systemd-firstboot.service \
         systemd-udevd.service systemd-udev-trigger.service
