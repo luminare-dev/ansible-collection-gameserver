@@ -122,6 +122,10 @@ class MoleculeSetupTest(unittest.TestCase):
         for line in froms:
             self.assertRegex(line, r"^FROM (debian:trixie|ubuntu:24\.04)@sha256:[0-9a-f]{64}$")
 
+    def test_cleaning_apt_lists_invalidates_the_cache_timestamp(self):
+        text = (ROOT / "molecule" / "resources" / "Dockerfile.j2").read_text(encoding="utf-8")
+        self.assertIn("/var/lib/apt/periodic/update-success-stamp", text)
+
     def test_scenarios_use_the_shared_image_and_prefixed_names(self):
         scenarios = sorted(ROOT.glob("roles/*/molecule/*/molecule.yml"))
         self.assertTrue(scenarios, "no Molecule scenario found")
