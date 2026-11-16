@@ -46,7 +46,6 @@
         name: git
         state: present
         update_cache: true
-        cache_valid_time: 3600
 
     - name: Create the folders for the fake artifacts
       ansible.builtin.file:
