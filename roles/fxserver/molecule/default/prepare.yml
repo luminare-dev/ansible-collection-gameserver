@@ -29,7 +29,6 @@
         name: nftables
         state: present
         update_cache: true
-        cache_valid_time: 3600
 
     # A minimal /etc/nftables.conf in the layout of the luminare.infra_edge base role, so that the
     # drop-in can be validated without that collection.
