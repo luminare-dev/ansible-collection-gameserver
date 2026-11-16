@@ -6,7 +6,7 @@
 # Base images are pinned by digest (pulled and checked 2026-10-21). Dependabot's docker ecosystem
 # reads the FROM lines below and proposes digest updates (.github/dependabot.yml).
 {% if item.image == 'gs-debian13' %}
-FROM debian:trixie@sha256:4c25275446ca371766b8b093c696782eabce06263fccacb8d5d813b3dc44b308
+FROM debian:trixie@sha256:9c6e381421d0f48d1b8133e573f33c185ee16cbf505eda9c4a8a4791b25ea8a6
 {% elif item.image == 'gs-ubuntu2404' %}
 FROM ubuntu:24.04@sha256:fe81560990fae86dc4743202b2cb4d3df98d0bcf949173cecef15ce1127ef852
 {% else %}
@@ -19,6 +19,7 @@ ENV container=docker \
 # systemd as PID 1 (the roles manage systemd units), Python for Ansible, python3-apt for the apt
 # module, sudo for become, CA certificates for HTTPS downloads. Nothing else: each role installs
 # what it needs, so a missing package shows up in Molecule and not first on a real host.
+# Keep the package lists: Ansible may reuse this recent apt cache without refreshing it.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
@@ -28,7 +29,6 @@ RUN apt-get update \
         systemd \
         systemd-sysv \
     && apt-get clean \
-    && rm -rf /var/lib/apt/lists/* \
     && rm -f /lib/systemd/system/multi-user.target.wants/getty.target \
     && systemctl mask getty.target console-getty.service systemd-firstboot.service \
         systemd-udevd.service systemd-udev-trigger.service
