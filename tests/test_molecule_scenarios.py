@@ -169,6 +169,11 @@ class ScenarioListTest(unittest.TestCase):
         self.assertEqual(ms.PLATFORMS, ("debian13", "ubuntu2404"))
         self.assertEqual(images, [f"gs-{p}" for p in ms.PLATFORMS])
 
+    def test_shared_image_keeps_apt_package_lists(self):
+        """A recent apt cache must still contain the lists Ansible may reuse."""
+        text = (ROOT / "molecule" / "resources" / "Dockerfile.j2").read_text(encoding="utf-8")
+        self.assertNotIn("rm -rf /var/lib/apt/lists", text)
+
 
 if __name__ == "__main__":
     unittest.main()

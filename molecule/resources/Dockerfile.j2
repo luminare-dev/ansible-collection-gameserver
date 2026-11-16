@@ -19,6 +19,7 @@ ENV container=docker \
 # systemd as PID 1 (the roles manage systemd units), Python for Ansible, python3-apt for the apt
 # module, sudo for become, CA certificates for HTTPS downloads. Nothing else: each role installs
 # what it needs, so a missing package shows up in Molecule and not first on a real host.
+# Keep the package lists: Ansible may reuse this recent apt cache without refreshing it.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
@@ -28,7 +29,6 @@ RUN apt-get update \
         systemd \
         systemd-sysv \
     && apt-get clean \
-    && rm -rf /var/lib/apt/lists/* \
     && rm -f /lib/systemd/system/multi-user.target.wants/getty.target \
     && systemctl mask getty.target console-getty.service systemd-firstboot.service \
         systemd-udevd.service systemd-udev-trigger.service
