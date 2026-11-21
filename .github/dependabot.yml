@@ -13,9 +13,14 @@ updates:
       prefix: ci
       include: scope
     labels: [dependencies]
+    open-pull-requests-limit: 5
     groups:
       actions:
         patterns: ["*"]
+        update-types: ["minor", "patch"]
+      actions-major:
+        patterns: ["*"]
+        update-types: ["major"]
 
   - package-ecosystem: pip
     directory: /
@@ -28,9 +33,14 @@ updates:
       prefix: build
       include: scope
     labels: [dependencies]
+    open-pull-requests-limit: 5
     groups:
       dev-tools:
         patterns: ["*"]
+        update-types: ["minor", "patch"]
+      dev-tools-major:
+        patterns: ["*"]
+        update-types: ["major"]
 
   - package-ecosystem: docker
     directory: /molecule/resources
@@ -43,6 +53,7 @@ updates:
       prefix: test
       include: scope
     labels: [dependencies]
+    open-pull-requests-limit: 5
     ignore:
       # Keep the tags (ubuntu:24.04 would otherwise become 25.10, 26.04, ...); digests still update.
       - dependency-name: "*"
