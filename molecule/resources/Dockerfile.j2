@@ -20,7 +20,7 @@ ENV container=docker \
 # module, sudo for become, CA certificates for HTTPS downloads. Nothing else: each role installs
 # what it needs, so a missing package shows up in Molecule and not first on a real host.
 # The apt lists are deleted to keep the image small, so the success stamp goes too: otherwise the
-# roles' apt tasks (update_cache with cache_valid_time) see a fresh stamp and skip the update.
+# roles' apt tasks (update_cache with cache_valid_time) see a fresh stamp (or, without it, the lists folder's fresh mtime) and skip the update.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
@@ -32,6 +32,7 @@ RUN apt-get update \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* \
     && rm -f /var/lib/apt/periodic/update-success-stamp \
+    && touch -d @0 /var/lib/apt/lists \
     && rm -f /lib/systemd/system/multi-user.target.wants/getty.target \
     && systemctl mask getty.target console-getty.service systemd-firstboot.service \
         systemd-udevd.service systemd-udev-trigger.service
